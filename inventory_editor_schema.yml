@@ -1,0 +1,133 @@
+---
+schema:
+  name: inventory_editor.gen
+  version: 1
+  description: Human-readable schema for inventory_editor.gen.yml
+
+root:
+  type: mapping
+  required:
+    - app
+    - compatibility
+    - filesystem_conventions
+    - features
+    - policies
+    - ux
+    - cli_assistant
+    - status_tracking
+
+fields:
+  app:
+    type: mapping
+    required:
+      - name
+      - version
+      - implementation_language
+      - default_locale
+      - supported_locales
+      - mode
+      - target
+    properties:
+      name:
+        type: string
+        allowed: [inventory-editor]
+      version:
+        type: semver
+      implementation_language:
+        type: string
+        allowed: [python]
+      default_locale:
+        type: string
+        allowed: [en, cs]
+      supported_locales:
+        type: list
+        items:
+          type: string
+          allowed: [en, cs]
+      mode:
+        type: string
+        allowed: [gui, cli, hybrid]
+      target:
+        type: string
+        allowed: [ansible-inventory-workspace]
+
+  compatibility:
+    type: mapping
+    required:
+      - inventory_formats
+      - supported_var_sources
+    properties:
+      inventory_formats:
+        type: list
+        items:
+          type: string
+          allowed: [yaml_static, ini_static, directory_inventory, tar_gz_snapshot]
+      supported_var_sources:
+        type: list
+        items:
+          type: string
+          allowed: [all_vars, group_vars, host_vars, inline_host_vars, playbook_vars, extra_vars, vault_references]
+
+  filesystem_conventions:
+    type: mapping
+    required:
+      - inventory_root_default
+      - inventory_file_default
+      - group_vars_root
+      - host_vars_root
+      - default_group_vars_file
+      - default_host_vars_file
+      - prefer_directory_per_host
+      - allow_multiple_files_per_group
+      - allow_multiple_files_per_host
+      - allow_theme_based_split
+
+  features:
+    type: mapping
+    notes:
+      - Boolean feature flags describe supported behavior.
+      - Nested sections may be extended without breaking compatibility.
+
+  policies:
+    type: mapping
+    required:
+      - naming
+      - validation
+      - safety
+
+  ux:
+    type: mapping
+    required:
+      - default_entry_point
+      - primary_actions
+      - variable_editor_defaults
+
+  cli_assistant:
+    type: mapping
+    required:
+      - enabled
+      - features
+
+  status_tracking:
+    type: mapping
+    required:
+      - statuses
+      - default_status
+    properties:
+      statuses:
+        type: list
+        items:
+          type: string
+          allowed: [todo, draft, approved, implemented, changed, deprecated]
+      default_status:
+        type: string
+        allowed: [todo, draft, approved, implemented, changed, deprecated]
+
+validation_rules:
+  - inventory paths are expressed relative to the project root
+  - host vars should prefer host_vars/<host>/main.yml for base data
+  - thematic subfiles are allowed and should be shown explicitly in the UI
+  - the editor must preserve user intent and never invent missing values
+  - importers may accept unknown files but must warn rather than silently ignore them
+
+
