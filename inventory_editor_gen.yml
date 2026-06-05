@@ -1,0 +1,137 @@
+---
+app:
+  name: inventory-editor
+  version: 0.1.0
+  implementation_language: python
+  default_locale: en
+  supported_locales:
+    - en
+    - cs
+  mode: gui
+  target: ansible-inventory-workspace
+
+compatibility:
+  inventory_formats:
+    - yaml_static
+    - ini_static
+    - directory_inventory
+    - tar_gz_snapshot
+  supported_var_sources:
+    - all_vars
+    - group_vars
+    - host_vars
+    - inline_host_vars
+    - playbook_vars
+    - extra_vars
+    - vault_references
+
+filesystem_conventions:
+  inventory_root_default: inventory
+  inventory_file_default: inventory.yml
+  group_vars_root: group_vars
+  host_vars_root: host_vars
+  default_group_vars_file: main.yml
+  default_host_vars_file: main.yml
+  prefer_directory_per_host: true
+  allow_multiple_files_per_group: true
+  allow_multiple_files_per_host: true
+  allow_theme_based_split: true
+
+features:
+  import:
+    inventory_dir: true
+    inventory_file: true
+    tar_gz_snapshot: true
+    detect_dynamic_inventory: true
+    normalize_to_project_model: true
+  edit:
+    create_inventory_from_zero: true
+    create_group: true
+    create_host: true
+    assign_host_to_multiple_groups: true
+    edit_all_vars: true
+    edit_group_vars: true
+    edit_host_vars: true
+    create_host_var_subfiles: true
+    create_group_var_subfiles: true
+  analysis:
+    effective_value_trace: true
+    source_path_trace: true
+    precedence_explanation: true
+    conflict_detection: true
+    duplicate_detection: true
+    type_mismatch_detection: true
+    severity_levels:
+      - A
+      - B
+      - C
+  export:
+    write_directory_workspace: true
+    write_tar_gz_snapshot: true
+    backup_before_save: true
+    preserve_comments_when_possible: true
+  guidance:
+    guided_mode: true
+    beginner_mode: true
+    expert_mode: true
+    tooltips_and_examples: true
+    naming_recommendations: true
+    inventory_quality_checks: true
+    ansible_cli_suggestion: true
+    vault_password_source_tracking: true
+    playbook_tag_discovery: true
+
+policies:
+  naming:
+    prefer_inventory_dir_name: inventory
+    prefer_host_dir_equals_hostname: true
+    prefer_main_yml_for_base_scope: true
+    recommend_thematic_files: true
+  validation:
+    require_parseable_yaml: true
+    require_resolved_project_model: true
+    allow_unknown_files: true
+    warn_on_ambiguous_ownership: true
+    warn_on_excessive_fragmentation: true
+  safety:
+    always_create_backup: true
+    never_overwrite_without_user_action: true
+    keep_export_reversible: true
+
+ux:
+  default_entry_point: new_or_open_project
+  primary_actions:
+    - import_workspace
+    - add_group
+    - add_host
+    - add_variable
+    - explain_value
+    - export
+  variable_editor_defaults:
+    host_level_starts_in_main_yml: true
+    allow_user_to_choose_subfile: true
+    suggest_subfile_name_by_topic: true
+
+cli_assistant:
+  enabled: true
+  features:
+    suggest_ansible_playbook_command: true
+    detect_inventory_argument: true
+    detect_playbook_path: true
+    detect_tags: true
+    detect_vault_password_file: true
+    detect_vault_id: true
+    validate_with_list_hosts: true
+    validate_with_list_tags: true
+    validate_with_list_tasks: true
+
+status_tracking:
+  statuses:
+    - todo
+    - draft
+    - approved
+    - implemented
+    - changed
+    - deprecated
+  default_status: draft
+
