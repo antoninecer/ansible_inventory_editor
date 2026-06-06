@@ -1,0 +1,8 @@
+# Global variables for all hosts
+# Network settings
+gateway: 192.168.0.254
+dns_server: 192.168.0.1
+
+# Proxmox specific
+proxmox_node: "pve1"
+proxmox_storage: "local-lvm"

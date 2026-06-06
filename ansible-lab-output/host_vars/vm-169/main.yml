@@ -1,0 +1,3 @@
+# Specialized host config
+is_primary: true
+custom_label: "node-169"

@@ -1,0 +1,54 @@
+# Full Proxmox Lab Inventory
+all:
+  children:
+    web_servers:
+      hosts:
+        vm-150:
+          ansible_host: 192.168.0.150
+        vm-151:
+          ansible_host: 192.168.0.151
+        vm-152:
+          ansible_host: 192.168.0.152
+        vm-153:
+          ansible_host: 192.168.0.153
+        vm-154:
+          ansible_host: 192.168.0.154
+        vm-155:
+          ansible_host: 192.168.0.155
+        vm-999:
+    db_servers:
+      hosts:
+        vm-156:
+          ansible_host: 192.168.0.156
+        vm-157:
+          ansible_host: 192.168.0.157
+        vm-158:
+          ansible_host: 192.168.0.158
+        vm-159:
+          ansible_host: 192.168.0.159
+        vm-160:
+          ansible_host: 192.168.0.160
+    app_servers:
+      hosts:
+        vm-161:
+          ansible_host: 192.168.0.161
+        vm-162:
+          ansible_host: 192.168.0.162
+        vm-163:
+          ansible_host: 192.168.0.163
+        vm-164:
+          ansible_host: 192.168.0.164
+        vm-165:
+          ansible_host: 192.168.0.165
+    cache_servers:
+      hosts:
+        vm-166:
+          ansible_host: 192.168.0.166
+        vm-167:
+          ansible_host: 192.168.0.167
+        vm-168:
+          ansible_host: 192.168.0.168
+    load_balancers:
+      hosts:
+        vm-169:
+          ansible_host: 192.168.0.169

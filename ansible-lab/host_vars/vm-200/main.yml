@@ -1,0 +1,3 @@
+# Monitoring node
+prometheus_enabled: true
+grafana_port: 3000

@@ -1,0 +1,5 @@
+# Configuration for app_servers
+app_servers_enabled: true
+env: production
+# Automated deployment tag
+deploy_tag: "v1.2.3"
