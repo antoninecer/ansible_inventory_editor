@@ -844,7 +844,16 @@ class MainWindow(QMainWindow):
             else: self._project.add_variable_to_group(target, v)
             
             self._dirty = True
-            self._reload_workspace()
+            self._rebuild_tree()
+
+            if is_host:
+                self._select_in_tree("host", target, self._current_group)
+            else:
+                self._select_in_tree("group", target)
+
+            self.statusBar().showMessage(
+                f"Variable '{key}' added to {path}. Press Save to write changes."
+            )
 
     def _export_workspace(self) -> None:
         if not self._project: return
