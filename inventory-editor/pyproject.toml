@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "inventory-editor"
 version = "0.1.0"
-description = "Ansible Inventory Editor"
+description = "Advanced desktop tool for working with Ansible inventories, host/group variables, vault files and workspace analysis."
 requires-python = ">=3.11"
 
 dependencies = [

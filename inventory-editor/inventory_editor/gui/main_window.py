@@ -5,7 +5,7 @@ import subprocess
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QTimer, QSize
-from PySide6.QtGui import QBrush, QColor, QFont, QAction, QIcon
+from PySide6.QtGui import QBrush, QColor, QFont, QAction, QIcon, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
     QDialog,
@@ -54,7 +54,7 @@ class AboutDialog(QDialog):
         self.resize(500, 350)
         layout = QVBoxLayout(self)
         
-        title = QLabel("Ansible Inventory Editor")
+        title = QLabel("AIS - Ansible Inventory Studio")
         title.setFont(QFont("Arial", 18, QFont.Weight.Bold))
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         
@@ -298,7 +298,7 @@ class VariableDialog(QDialog):
 class MainWindow(QMainWindow):
     def __init__(self, workspace: str | Path | None = None) -> None:
         super().__init__()
-        self.setWindowTitle("Ansible Inventory Editor")
+        self.setWindowTitle("AIS - Ansible Inventory Studio")
         self.resize(1600, 980)
         self.statusBar().showMessage("Ready")
 
@@ -314,8 +314,16 @@ class MainWindow(QMainWindow):
         self._current_host: str | None = None
         self._current_branch_group: str | None = None
 
+        self._find_matches: list[QTreeWidgetItem] = []
+        self._find_index: int = -1
+        self._find_text: str = ""
+
+        self._last_find_text: str = ""
+        self._last_find_index: int = -1
+
         self._setup_ui()
         self._setup_menu()
+        self._setup_shortcuts()
         self._update_action_states()
 
         if workspace is not None:
@@ -323,6 +331,11 @@ class MainWindow(QMainWindow):
             self._load_workspace()
         elif settings.default_workspace:
             self.path_edit.setText(settings.default_workspace)
+
+    def _setup_shortcuts(self) -> None:
+        self.find_shortcut = QShortcut(QKeySequence.StandardKey.Find, self)
+        self.find_shortcut.setContext(Qt.ShortcutContext.WindowShortcut)
+        self.find_shortcut.activated.connect(self._show_find_bar)
 
     def _setup_ui(self) -> None:
         # --- Toolbar ---
@@ -357,11 +370,42 @@ class MainWindow(QMainWindow):
         toolbar.addSeparator()
         
         self.find_action = QAction("Find", self)
-        self.find_action.setToolTip("Search in inventory (Ctrl+F)")
-        self.find_action.triggered.connect(self._find_entry)
+        self.find_action.setToolTip("Search in inventory (Ctrl+F / Cmd+F)")
+        self.find_action.setShortcut(QKeySequence.StandardKey.Find)
+        self.find_action.triggered.connect(self._show_find_bar)
         toolbar.addAction(self.find_action)
 
         toolbar.addSeparator()
+
+        # Dedicated search toolbar. More reliable than hidden widgets inside main toolbar.
+        self.find_toolbar = QToolBar("Find Toolbar")
+        self.find_toolbar.setMovable(False)
+        self.addToolBarBreak(Qt.ToolBarArea.TopToolBarArea)
+        self.addToolBar(Qt.ToolBarArea.TopToolBarArea, self.find_toolbar)
+
+        self.find_toolbar.addWidget(QLabel(" Find: "))
+
+        self.find_edit = QLineEdit()
+        self.find_edit.setPlaceholderText("Find group or host...")
+        self.find_edit.setMinimumWidth(320)
+        self.find_edit.textChanged.connect(self._on_find_text_changed)
+        self.find_edit.returnPressed.connect(self._find_next)
+        self.find_toolbar.addWidget(self.find_edit)
+
+        self.find_prev_button = QPushButton("Previous")
+        self.find_prev_button.clicked.connect(self._find_previous)
+        self.find_toolbar.addWidget(self.find_prev_button)
+
+        self.find_next_button = QPushButton("Next")
+        self.find_next_button.clicked.connect(self._find_next)
+        self.find_toolbar.addWidget(self.find_next_button)
+
+        self.find_close_button = QPushButton("×")
+        self.find_close_button.setToolTip("Close search")
+        self.find_close_button.clicked.connect(self._hide_find_bar)
+        self.find_toolbar.addWidget(self.find_close_button)
+
+        self.find_toolbar.hide()
         
         # Action-icons for Inventory management
         self.add_group_action = QAction("+ Group", self)
@@ -543,7 +587,7 @@ class MainWindow(QMainWindow):
             
             inv_file = root / "inventory.yml"
             if not inv_file.exists():
-                inv_file.write_text("# Created by Ansible Inventory Editor\nall:\n  hosts:\n    localhost:\n      ansible_connection: local\n", encoding="utf-8")
+                inv_file.write_text("# Created by AIS - Ansible Inventory Studio\nall:\n  hosts:\n    localhost:\n      ansible_connection: local\n", encoding="utf-8")
             
             all_file = root / "group_vars" / "all" / "main.yml"
             if not all_file.exists():
@@ -874,15 +918,138 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Save Error", str(e))
 
     def _find_entry(self) -> None:
-        text, ok = QInputDialog.getText(self, "Find", "Search text:")
-        if ok and text.strip():
-            # Basic logic search
-            needle = text.lower()
-            for i in range(self.tree.topLevelItemCount()):
-                item = self.tree.topLevelItem(i)
-                if needle in item.text(0).lower():
-                    self.tree.setCurrentItem(item)
-                    return
+        self._show_find_bar()
+
+    def _show_find_bar(self) -> None:
+        if hasattr(self, "find_toolbar"):
+            self.find_toolbar.show()
+
+        self.find_edit.setFocus()
+        self.find_edit.selectAll()
+
+        self.statusBar().showMessage("Search opened", 3000)
+
+        if self.find_edit.text().strip():
+            self._on_find_text_changed(self.find_edit.text())
+
+    def _hide_find_bar(self) -> None:
+        if hasattr(self, "find_toolbar"):
+            self.find_toolbar.hide()
+
+        self._find_matches = []
+        self._find_index = -1
+        self._find_text = ""
+
+        self.statusBar().showMessage("Search closed", 3000)
+        self.tree.setFocus()
+
+    def _on_find_text_changed(self, value: str) -> None:
+        needle = value.strip().lower()
+        self._find_text = needle
+        self._find_index = -1
+
+        if not needle:
+            self._find_matches = []
+            self.statusBar().showMessage("Search ready", 3000)
+            return
+
+        self._find_matches = self._collect_find_matches(needle)
+
+        if not self._find_matches:
+            self.statusBar().showMessage(f"Nothing found for: {value}", 5000)
+            return
+
+        self._find_index = 0
+        self._select_find_match()
+
+    def _collect_find_matches(self, needle: str) -> list[QTreeWidgetItem]:
+        matches: list[QTreeWidgetItem] = []
+
+        def walk(item: QTreeWidgetItem) -> None:
+            values: list[str] = []
+
+            for col in range(item.columnCount()):
+                values.append(item.text(col))
+
+            payload = item.data(0, Qt.ItemDataRole.UserRole)
+            if payload:
+                values.extend(str(x) for x in payload if x is not None)
+
+            haystack = " ".join(values).lower()
+
+            if needle in haystack:
+                matches.append(item)
+
+            for i in range(item.childCount()):
+                walk(item.child(i))
+
+        for i in range(self.tree.topLevelItemCount()):
+            walk(self.tree.topLevelItem(i))
+
+        return matches
+
+    def _find_next(self) -> None:
+        if not self.find_edit.isVisible():
+            self._show_find_bar()
+            return
+
+        needle = self.find_edit.text().strip().lower()
+        if not needle:
+            return
+
+        if needle != self._find_text or not self._find_matches:
+            self._on_find_text_changed(self.find_edit.text())
+            return
+
+        self._find_index = (self._find_index + 1) % len(self._find_matches)
+        self._select_find_match()
+
+    def _find_previous(self) -> None:
+        if not self.find_edit.isVisible():
+            self._show_find_bar()
+            return
+
+        needle = self.find_edit.text().strip().lower()
+        if not needle:
+            return
+
+        if needle != self._find_text or not self._find_matches:
+            self._on_find_text_changed(self.find_edit.text())
+            return
+
+        self._find_index = (self._find_index - 1) % len(self._find_matches)
+        self._select_find_match()
+
+    def _select_find_match(self) -> None:
+        if not self._find_matches:
+            return
+
+        if self._find_index < 0:
+            self._find_index = 0
+
+        item = self._find_matches[self._find_index]
+
+        self.tree.clearSelection()
+        self._expand_item_path(item)
+        item.setSelected(True)
+        self.tree.setCurrentItem(item)
+        self.tree.scrollToItem(item, QTreeWidget.ScrollHint.PositionAtCenter)
+
+        payload = item.data(0, Qt.ItemDataRole.UserRole)
+        label = item.text(0)
+
+        if payload:
+            kind = payload[0]
+            if kind == "host" and len(payload) > 2:
+                label = f"host {payload[1]} in group {payload[2]}"
+            elif kind == "group" and len(payload) > 1:
+                label = f"group {payload[1]}"
+
+        self.statusBar().showMessage(
+            f"Found {self._find_index + 1}/{len(self._find_matches)}: {label}",
+            7000,
+        )
+
 
     def _group_parent_map(self) -> dict[str, set[str]]:
         pm = {}

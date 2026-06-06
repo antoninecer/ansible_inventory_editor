@@ -1,3 +1,7 @@
+# AIS - Ansible Inventory Studio
+
+Advanced desktop tool for working with Ansible inventories, host/group variables, vault files and workspace analysis.
+
 # Inventory Editor Specification
 
 This repository defines the product contract for a new Ansible inventory editor.
