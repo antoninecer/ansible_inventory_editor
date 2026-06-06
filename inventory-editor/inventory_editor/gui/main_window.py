@@ -314,7 +314,7 @@ class MainWindow(QMainWindow):
         self._current_host: str | None = None
         self._current_branch_group: str | None = None
 
-        self._find_matches: list[QTreeWidgetItem] = []
+        self._find_matches: list[tuple[str, QTreeWidgetItem]] = []
         self._find_index: int = -1
         self._find_text: str = ""
 
@@ -370,7 +370,7 @@ class MainWindow(QMainWindow):
         toolbar.addSeparator()
         
         self.find_action = QAction("Find", self)
-        self.find_action.setToolTip("Search in inventory (Ctrl+F / Cmd+F)")
+        self.find_action.setToolTip("Search hosts, groups and variable keys (Ctrl+F / Cmd+F)")
         self.find_action.setShortcut(QKeySequence.StandardKey.Find)
         self.find_action.triggered.connect(self._show_find_bar)
         toolbar.addAction(self.find_action)
@@ -386,9 +386,9 @@ class MainWindow(QMainWindow):
         self.find_toolbar.addWidget(QLabel(" Find: "))
 
         self.find_edit = QLineEdit()
-        self.find_edit.setPlaceholderText("Find group or host...")
+        self.find_edit.setPlaceholderText("Find host, group or variable key...")
         self.find_edit.setMinimumWidth(320)
-        self.find_edit.textChanged.connect(self._on_find_text_changed)
+        # Search is intentionally executed only on Enter / Next / Previous.
         self.find_edit.returnPressed.connect(self._find_next)
         self.find_toolbar.addWidget(self.find_edit)
 
@@ -929,8 +929,8 @@ class MainWindow(QMainWindow):
 
         self.statusBar().showMessage("Search opened", 3000)
 
-        if self.find_edit.text().strip():
-            self._on_find_text_changed(self.find_edit.text())
+        # Do not auto-search while opening the bar.
+        # User can type freely and start search with Enter / Next / Previous.
 
     def _hide_find_bar(self) -> None:
         if hasattr(self, "find_toolbar"):
@@ -944,111 +944,262 @@ class MainWindow(QMainWindow):
         self.tree.setFocus()
 
     def _on_find_text_changed(self, value: str) -> None:
-        needle = value.strip().lower()
-        self._find_text = needle
+        # Search is intentionally not executed while typing.
+        # This method is kept only as a harmless compatibility/reset hook.
+        self._find_text = value.strip().lower()
+        self._find_matches = []
         self._find_index = -1
 
-        if not needle:
-            self._find_matches = []
+        if not self._find_text:
             self.statusBar().showMessage("Search ready", 3000)
+        else:
+            self.statusBar().showMessage("Press Enter or Next to search", 3000)
+
+
+    def _collect_find_matches(self, needle: str):
+        """Collect stable global search matches.
+
+        Default search scope:
+        - all group names
+        - all host names
+        - all variable keys in all groups
+        - all variable keys in all hosts
+
+        Values and file paths are intentionally not searched by default.
+        Matches are stable tuples, not QTreeWidgetItem references.
+        """
+        matches: list[tuple] = []
+
+        if not self._project:
+            return matches
+
+        # Groups
+        for group_name in sorted(self._project.groups):
+            if needle in group_name.lower():
+                matches.append(("group", group_name))
+
+        # Hosts
+        for host_name in sorted(self._project.hosts):
+            if needle in host_name.lower():
+                matches.append(("host", host_name))
+
+        # Group variable keys
+        for group_name, group in sorted(self._project.groups.items()):
+            for var in getattr(group, "variables", []):
+                key = str(getattr(var, "key", ""))
+                if needle in key.lower():
+                    source = self._variable_source_path(var)
+                    matches.append(("group_var", group_name, key, source))
+
+        # Host variable keys
+        for host_name, host in sorted(self._project.hosts.items()):
+            for var in getattr(host, "variables", []):
+                key = str(getattr(var, "key", ""))
+                if needle in key.lower():
+                    source = self._variable_source_path(var)
+                    matches.append(("host_var", host_name, key, source))
+
+        return matches
+
+    def _variable_source_path(self, var: object) -> str:
+        source = getattr(var, "source", None)
+        return str(getattr(source, "source_path", ""))
+
+
+
+    def _run_find_step(self, direction: int) -> None:
+        if not self.find_edit.isVisible() and not (
+            hasattr(self, "find_toolbar") and self.find_toolbar.isVisible()
+        ):
+            self._show_find_bar()
             return
+
+        needle = self.find_edit.text().strip().lower()
+        if not needle:
+            self.statusBar().showMessage("Enter text to search.", 3000)
+            return
+
+        previous_text = self._find_text
+        previous_index = self._find_index
+
+        # Recollect every time to avoid stale/deleted QTreeWidgetItem objects.
+        self._find_matches = self._collect_find_matches(needle)
+
+        if not self._find_matches:
+            self._find_text = needle
+            self._find_index = -1
+            self.statusBar().showMessage(f"Nothing found for: {self.find_edit.text()}", 5000)
+            self.find_edit.setFocus()
+            return
+
+        if previous_text != needle or previous_index < 0:
+            self._find_index = 0 if direction >= 0 else len(self._find_matches) - 1
+        else:
+            self._find_index = (previous_index + direction) % len(self._find_matches)
+
+        self._find_text = needle
+        self._select_find_match()
+
+    def _run_find_step(self, direction: int) -> None:
+        if not self.find_edit.isVisible() and not (
+            hasattr(self, "find_toolbar") and self.find_toolbar.isVisible()
+        ):
+            self._show_find_bar()
+            return
+
+        needle = self.find_edit.text().strip().lower()
+        if not needle:
+            self.statusBar().showMessage("Enter text to search.", 3000)
+            return
+
+        previous_text = self._find_text
+        previous_index = self._find_index
 
         self._find_matches = self._collect_find_matches(needle)
 
         if not self._find_matches:
-            self.statusBar().showMessage(f"Nothing found for: {value}", 5000)
+            self._find_text = needle
+            self._find_index = -1
+            self.statusBar().showMessage(f"Nothing found for: {self.find_edit.text()}", 5000)
+            self.find_edit.setFocus()
             return
 
-        self._find_index = 0
+        if previous_text != needle or previous_index < 0:
+            self._find_index = 0 if direction >= 0 else len(self._find_matches) - 1
+        else:
+            self._find_index = (previous_index + direction) % len(self._find_matches)
+
+        self._find_text = needle
         self._select_find_match()
-
-    def _collect_find_matches(self, needle: str) -> list[QTreeWidgetItem]:
-        matches: list[QTreeWidgetItem] = []
-
-        def walk(item: QTreeWidgetItem) -> None:
-            values: list[str] = []
-
-            for col in range(item.columnCount()):
-                values.append(item.text(col))
-
-            payload = item.data(0, Qt.ItemDataRole.UserRole)
-            if payload:
-                values.extend(str(x) for x in payload if x is not None)
-
-            haystack = " ".join(values).lower()
-
-            if needle in haystack:
-                matches.append(item)
-
-            for i in range(item.childCount()):
-                walk(item.child(i))
-
-        for i in range(self.tree.topLevelItemCount()):
-            walk(self.tree.topLevelItem(i))
-
-        return matches
 
     def _find_next(self) -> None:
-        if not self.find_edit.isVisible():
-            self._show_find_bar()
-            return
-
-        needle = self.find_edit.text().strip().lower()
-        if not needle:
-            return
-
-        if needle != self._find_text or not self._find_matches:
-            self._on_find_text_changed(self.find_edit.text())
-            return
-
-        self._find_index = (self._find_index + 1) % len(self._find_matches)
-        self._select_find_match()
+        self._run_find_step(1)
 
     def _find_previous(self) -> None:
-        if not self.find_edit.isVisible():
-            self._show_find_bar()
-            return
+        self._run_find_step(-1)
 
-        needle = self.find_edit.text().strip().lower()
-        if not needle:
-            return
-
-        if needle != self._find_text or not self._find_matches:
-            self._on_find_text_changed(self.find_edit.text())
-            return
-
-        self._find_index = (self._find_index - 1) % len(self._find_matches)
-        self._select_find_match()
 
     def _select_find_match(self) -> None:
         if not self._find_matches:
             return
 
-        if self._find_index < 0:
+        if self._find_index < 0 or self._find_index >= len(self._find_matches):
             self._find_index = 0
 
-        item = self._find_matches[self._find_index]
+        match = self._find_matches[self._find_index]
+        kind = match[0]
+        label = str(match)
 
+        if kind == "group":
+            group_name = match[1]
+            item = self._find_inventory_item("group", group_name)
+            if item:
+                self._select_tree_item(item)
+                label = f"group {group_name}"
+            else:
+                label = f"group {group_name} not visible"
+
+        elif kind == "host":
+            host_name = match[1]
+            item = self._find_inventory_item("host", host_name)
+            if item:
+                self._select_tree_item(item)
+                payload = item.data(0, Qt.ItemDataRole.UserRole)
+                branch = payload[2] if payload and len(payload) > 2 else "-"
+                label = f"host {host_name} in group {branch}"
+            else:
+                label = f"host {host_name} not visible"
+
+        elif kind == "group_var":
+            group_name, key, source = match[1], match[2], match[3]
+            item = self._find_inventory_item("group", group_name)
+            if item:
+                self._select_tree_item(item)
+            self._select_variable_key(key, source)
+            label = f"variable key {key} in group {group_name} / {source}"
+
+        elif kind == "host_var":
+            host_name, key, source = match[1], match[2], match[3]
+            item = self._find_inventory_item("host", host_name)
+            if item:
+                self._select_tree_item(item)
+            self._select_variable_key(key, source)
+            label = f"variable key {key} in host {host_name} / {source}"
+
+        self.find_edit.setFocus()
+
+        self.statusBar().showMessage(
+            f"Found {self._find_index + 1}/{len(self._find_matches)}: {label}",
+            7000,
+        )
+
+    def _find_inventory_item(
+        self,
+        node_type: str,
+        name: str,
+        branch: str | None = None,
+    ) -> QTreeWidgetItem | None:
+        def walk(parent: QTreeWidgetItem | None = None) -> QTreeWidgetItem | None:
+            count = self.tree.topLevelItemCount() if parent is None else parent.childCount()
+            for i in range(count):
+                item = self.tree.topLevelItem(i) if parent is None else parent.child(i)
+                payload = item.data(0, Qt.ItemDataRole.UserRole)
+
+                if payload and payload[0] == node_type and payload[1] == name:
+                    if node_type != "host" or branch is None or payload[2] == branch:
+                        return item
+
+                found = walk(item)
+                if found:
+                    return found
+
+            return None
+
+        return walk()
+
+    def _select_tree_item(self, item: QTreeWidgetItem) -> None:
         self.tree.clearSelection()
         self._expand_item_path(item)
         item.setSelected(True)
         self.tree.setCurrentItem(item)
         self.tree.scrollToItem(item, QTreeWidget.ScrollHint.PositionAtCenter)
 
-        payload = item.data(0, Qt.ItemDataRole.UserRole)
-        label = item.text(0)
+    def _select_variable_key(self, key: str, source: str = "") -> None:
+        self._select_tab_containing_widget(self.variables_tree)
 
-        if payload:
-            kind = payload[0]
-            if kind == "host" and len(payload) > 2:
-                label = f"host {payload[1]} in group {payload[2]}"
-            elif kind == "group" and len(payload) > 1:
-                label = f"group {payload[1]}"
+        best: QTreeWidgetItem | None = None
 
-        self.statusBar().showMessage(
-            f"Found {self._find_index + 1}/{len(self._find_matches)}: {label}",
-            7000,
-        )
+        for i in range(self.variables_tree.topLevelItemCount()):
+            item = self.variables_tree.topLevelItem(i)
+            item_key = item.text(0)
+            item_source = item.text(3)
+
+            if item_key == key and (not source or item_source == source):
+                best = item
+                break
+
+            if item_key == key and best is None:
+                best = item
+
+        if best:
+            self.variables_tree.clearSelection()
+            best.setSelected(True)
+            self.variables_tree.setCurrentItem(best)
+            self.variables_tree.scrollToItem(best, QTreeWidget.ScrollHint.PositionAtCenter)
+
+
+
+    def _select_tab_containing_widget(self, widget) -> None:
+        for i in range(self.tabs.count()):
+            page = self.tabs.widget(i)
+            if page is widget or page.isAncestorOf(widget):
+                self.tabs.setCurrentIndex(i)
+                return
+
+    def _find_label(self, kind: str, item: QTreeWidgetItem) -> str:
+        # Kept for backward compatibility with older search code.
+        return item.text(0)
+
 
 
     def _group_parent_map(self) -> dict[str, set[str]]:
