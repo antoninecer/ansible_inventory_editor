@@ -215,6 +215,23 @@ class VariableDialog(QDialog):
         file_name = self.file_edit.text().strip() or "main.yml"
         encrypt = self.encrypt_cb.isChecked()
 
+        if encrypt and "vault" not in file_name.lower():
+            answer = QMessageBox.question(
+                self,
+                "Encrypting plain file?",
+                f"You are about to encrypt '{file_name}'. This will make the ENTIRE file unreadable without a password.\n\n"
+                "Usually, it is better to use a file like 'vault.yml' for secrets.\n\n"
+                "Do you want to change the filename to 'vault.yml' instead?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No | QMessageBox.StandardButton.Cancel,
+                QMessageBox.StandardButton.Yes
+            )
+            if answer == QMessageBox.StandardButton.Yes:
+                file_name = "vault.yml"
+                self.file_edit.setText(file_name)
+                return # Let user check again
+            elif answer == QMessageBox.StandardButton.Cancel:
+                return
+
         raw_value = self.value_edit.toPlainText().strip()
         try:
             value = _yaml_loader.load(raw_value) if raw_value else None
@@ -258,7 +275,6 @@ class MainWindow(QMainWindow):
         load_button = QPushButton("Load")
         reload_button = QPushButton("Reload")
         find_button = QPushButton("Find")
-        exit_button = QPushButton("Exit")
         add_group_button = QPushButton("Add group")
         add_host_button = QPushButton("Add host")
         add_variable_button = QPushButton("Add variable")
@@ -269,7 +285,6 @@ class MainWindow(QMainWindow):
         load_button.clicked.connect(self._load_workspace)
         reload_button.clicked.connect(self._reload_workspace)
         find_button.clicked.connect(self._find_entry)
-        exit_button.clicked.connect(self.close)
         add_group_button.clicked.connect(self._add_group)
         add_host_button.clicked.connect(self._add_host)
         add_variable_button.clicked.connect(self._add_variable)
@@ -285,7 +300,6 @@ class MainWindow(QMainWindow):
         top_row.addWidget(find_button)
         top_row.addWidget(export_button)
         top_row.addWidget(settings_button)
-        top_row.addWidget(exit_button)
         top_row.addWidget(add_group_button)
         top_row.addWidget(add_host_button)
         top_row.addWidget(add_variable_button)
@@ -305,6 +319,7 @@ class MainWindow(QMainWindow):
         self.variables_tree = QTreeWidget()
         self.variables_tree.setHeaderLabels(["Key", "Value", "Scope", "Source"])
         self.variables_tree.itemSelectionChanged.connect(self._on_variable_selection_changed)
+        self.variables_tree.itemDoubleClicked.connect(self._on_variable_double_clicked)
         self.variables_tree.header().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
         self.variables_tree.header().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         self.variables_tree.header().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
@@ -567,12 +582,27 @@ class MainWindow(QMainWindow):
     def _populate_variables_tree(self, rows: list[object]) -> None:
         self.variables_tree.clear()
         for row in sorted(rows, key=self._variable_sort_key):
-            item = QTreeWidgetItem([row.key, row.value_text, row.scope, row.source_path])
+            # Mask value if it's from a vault file
+            is_vault = "vault" in row.source_path.lower()
+            display_value = "********" if is_vault else row.value_text
+
+            item = QTreeWidgetItem([row.key, display_value, row.scope, row.source_path])
             item.setData(0, Qt.ItemDataRole.UserRole, row.key)
+            # Store real value for double-click reveal
+            item.setData(1, Qt.ItemDataRole.UserRole, row.value_text)
             self._style_item(item, row.color)
             self.variables_tree.addTopLevelItem(item)
         self.variables_tree.resizeColumnToContents(0)
         self.variables_tree.resizeColumnToContents(2)
+
+    def _on_variable_double_clicked(self, item: QTreeWidgetItem, column: int) -> None:
+        if column == 1: # Value column
+            real_value = item.data(1, Qt.ItemDataRole.UserRole)
+            if real_value:
+                item.setText(1, real_value)
+                # Auto-hide after 10 seconds
+                from PySide6.QtCore import QTimer
+                QTimer.singleShot(10000, lambda: item.setText(1, "********"))
 
     def _populate_files_tree(self, rows: list[object]) -> None:
         self.files_tree.clear()
@@ -590,7 +620,10 @@ class MainWindow(QMainWindow):
         view = build_group_context_view(self._project, self._scan, group_name)
         self.overview_text.setPlainText("\n".join(view.summary_lines))
         self._populate_variables_tree(view.variables)
-        self._populate_files_tree(view.files)
+        if hasattr(self, "_populate_files_tree"):
+            self._populate_files_tree(view.files)
+        else:
+            self.statusBar().showMessage("Warning: _populate_files_tree missing!")
         self.trace_text.setPlainText(
             "Group context\n\n"
             f"Hosts: {', '.join(view.hosts) if view.hosts else '-'}\n"
@@ -613,7 +646,10 @@ class MainWindow(QMainWindow):
 
         self.overview_text.setPlainText(content)
         self._populate_variables_tree(view.variables)
-        self._populate_files_tree(view.files)
+        if hasattr(self, "_populate_files_tree"):
+            self._populate_files_tree(view.files)
+        else:
+            self.statusBar().showMessage("Warning: _populate_files_tree missing!")
         self.trace_text.setPlainText("Select a variable to see its trace.")
         self.file_preview.setPlainText("")
         self.issues_text.setPlainText(
