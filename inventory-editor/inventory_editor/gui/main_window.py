@@ -4,9 +4,10 @@ import os
 import subprocess
 from pathlib import Path
 
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QBrush, QColor, QFont
+from PySide6.QtCore import Qt, QTimer, QSize
+from PySide6.QtGui import QBrush, QColor, QFont, QAction, QIcon
 from PySide6.QtWidgets import (
+    QApplication,
     QDialog,
     QDialogButtonBox,
     QFileDialog,
@@ -17,15 +18,19 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QMainWindow,
+    QMenuBar,
     QMessageBox,
     QPushButton,
     QSplitter,
     QTabWidget,
     QTextEdit,
+    QToolBar,
     QTreeWidget,
     QTreeWidgetItem,
     QVBoxLayout,
     QWidget,
+    QCheckBox,
+    QSizePolicy
 )
 
 from ruamel.yaml import YAML
@@ -37,16 +42,58 @@ from inventory_editor.io.workspace_exporter import export_workspace
 from inventory_editor.io.workspace_loader import load_inventory_workspace
 from inventory_editor.models.project import ProjectModel
 from inventory_editor.models.variable import Variable, VariableScope, VariableSource
+from inventory_editor.gui.settings import settings
+from inventory_editor.io.vault_handler import VaultHandler
 
 _yaml_loader = YAML(typ="safe")
 
-
-from inventory_editor.gui.settings import settings
+class AboutDialog(QDialog):
+    def __init__(self, parent: QWidget) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("About Inventory Editor")
+        self.resize(500, 350)
+        layout = QVBoxLayout(self)
+        
+        title = QLabel("Ansible Inventory Editor")
+        title.setFont(QFont("Arial", 18, QFont.Weight.Bold))
+        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        
+        author = QLabel("Author: Antonín Ečer, DiS.")
+        author.setFont(QFont("Arial", 12))
+        author.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        
+        github = QLabel('<a href="https://github.com/antoninecer/ansible_inventory_editor">GitHub Repository</a>')
+        github.setOpenExternalLinks(True)
+        github.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        
+        desc = QTextEdit()
+        desc.setReadOnly(True)
+        desc.setPlainText(
+            "A professional tool for managing complex Ansible inventories.\n\n"
+            "Key Features:\n"
+            "- Round-trip YAML: Preserves your comments and formatting.\n"
+            "- Ansible Vault: Integrated encryption/decryption and secure editing.\n"
+            "- Visibility: Automatic masking of secrets with 10s reveal timer.\n"
+            "- Analysis: Intelligent variable precedence and provenance tracking.\n"
+            "- Organization: Visual management of hosts and hierarchical groups."
+        )
+        
+        layout.addWidget(title)
+        layout.addSpacing(5)
+        layout.addWidget(author)
+        layout.addWidget(github)
+        layout.addSpacing(10)
+        layout.addWidget(desc)
+        
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok)
+        buttons.accepted.connect(self.accept)
+        layout.addWidget(buttons)
 
 class HostDialog(QDialog):
     def __init__(self, parent: QWidget, groups: list[str], initial_group: str | None = None) -> None:
         super().__init__(parent)
         self.setWindowTitle("Add Host")
+        self.resize(400, 500)
         layout = QVBoxLayout(self)
         form = QFormLayout()
 
@@ -54,7 +101,7 @@ class HostDialog(QDialog):
         form.addRow("Host Name:", self.name_edit)
 
         self.group_list = QTreeWidget()
-        self.group_list.setHeaderLabels(["Groups"])
+        self.group_list.setHeaderLabels(["Available Groups"])
         self.group_list.setSelectionMode(QTreeWidget.SelectionMode.MultiSelection)
         
         for g in sorted(groups):
@@ -64,7 +111,7 @@ class HostDialog(QDialog):
                 item.setSelected(True)
         
         layout.addLayout(form)
-        layout.addWidget(QLabel("Select Groups:"))
+        layout.addWidget(QLabel("Assign to Groups:"))
         layout.addWidget(self.group_list)
 
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
@@ -76,20 +123,21 @@ class HostDialog(QDialog):
         groups = [item.text(0) for item in self.group_list.selectedItems()]
         return self.name_edit.text().strip(), groups
 
-from inventory_editor.io.vault_handler import VaultHandler
-
 class CodeEditorDialog(QDialog):
     def __init__(self, parent: QWidget, file_path: Path, content: str, is_vault: bool = False) -> None:
         super().__init__(parent)
         self.file_path = file_path
         self.is_vault = is_vault
-        self.setWindowTitle(f"Editing: {file_path.name}" + (" (VAULT)" if is_vault else ""))
+        self.setWindowTitle(f"Editing: {file_path.name}" + (" (VAULTED)" if is_vault else ""))
         self.resize(1000, 800)
 
         layout = QVBoxLayout(self)
         self.editor = QTextEdit()
-        self.editor.setFontFamily("Menlo")  # Good for macOS
+        # Use a proper monospaced font
+        font = QFont("Menlo", 12) if os.name != 'nt' else QFont("Consolas", 12)
+        self.editor.setFont(font)
         self.editor.setPlainText(content)
+        self.editor.setAcceptRichText(False)
         layout.addWidget(self.editor)
 
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
@@ -103,7 +151,7 @@ class CodeEditorDialog(QDialog):
             if self.is_vault:
                 VaultHandler.encrypt(content, self.file_path)
             else:
-                self.file_path.write_text(content)
+                self.file_path.write_text(content, encoding="utf-8")
             self.accept()
         except Exception as e:
             QMessageBox.critical(self, "Save failed", str(e))
@@ -111,7 +159,7 @@ class CodeEditorDialog(QDialog):
 class SettingsDialog(QDialog):
     def __init__(self, parent: QWidget) -> None:
         super().__init__(parent)
-        self.setWindowTitle("Settings")
+        self.setWindowTitle("Application Settings")
         self.resize(600, 400)
         layout = QVBoxLayout(self)
         form = QFormLayout()
@@ -123,21 +171,21 @@ class SettingsDialog(QDialog):
         self.editor_edit = QLineEdit(settings.external_editor)
 
         browse_ws = QPushButton("...")
-        browse_ws.setFixedWidth(30)
+        browse_ws.setFixedWidth(35)
         browse_ws.clicked.connect(self._browse_ws)
         ws_layout = QHBoxLayout()
         ws_layout.addWidget(self.ws_edit)
         ws_layout.addWidget(browse_ws)
 
         browse_vf = QPushButton("...")
-        browse_vf.setFixedWidth(30)
+        browse_vf.setFixedWidth(35)
         browse_vf.clicked.connect(self._browse_vf)
         vf_layout = QHBoxLayout()
         vf_layout.addWidget(self.vault_file_edit)
         vf_layout.addWidget(browse_vf)
 
         browse_editor = QPushButton("...")
-        browse_editor.setFixedWidth(30)
+        browse_editor.setFixedWidth(35)
         browse_editor.clicked.connect(self._browse_editor)
         editor_layout = QHBoxLayout()
         editor_layout.addWidget(self.editor_edit)
@@ -147,7 +195,7 @@ class SettingsDialog(QDialog):
         form.addRow("Vault Password:", self.vault_pass_edit)
         form.addRow("Vault Password File:", vf_layout)
         form.addRow("External Editor Command:", editor_layout)
-        form.addRow(QLabel("(Leave editor empty for internal editor)"))
+        form.addRow("", QLabel("<i>(Leave empty to use built-in editor)</i>"))
 
         layout.addLayout(form)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
@@ -175,13 +223,11 @@ class SettingsDialog(QDialog):
         settings.save()
         self.accept()
 
-from PySide6.QtWidgets import QCheckBox
-
 class VariableDialog(QDialog):
     def __init__(self, parent: QWidget, title: str, default_file: str = "main.yml") -> None:
         super().__init__(parent)
         self.setWindowTitle(title)
-        self.resize(640, 480)
+        self.resize(640, 500)
 
         self._value = None
 
@@ -192,10 +238,12 @@ class VariableDialog(QDialog):
         self.file_edit = QLineEdit(default_file)
         self.encrypt_cb = QCheckBox("Encrypt as Vault")
         self.value_edit = QTextEdit()
-        self.value_edit.setPlaceholderText("YAML value, for example: 42, true, [a, b], or a multiline mapping")
+        font = QFont("Menlo", 11) if os.name != 'nt' else QFont("Consolas", 11)
+        self.value_edit.setFont(font)
+        self.value_edit.setPlaceholderText("YAML value (e.g. 42, true, [a, b], or object)")
 
         form.addRow("Key:", self.key_edit)
-        form.addRow("File name:", self.file_edit)
+        form.addRow("Target File:", self.file_edit)
         form.addRow("", self.encrypt_cb)
         form.addRow("Value:", self.value_edit)
 
@@ -209,7 +257,7 @@ class VariableDialog(QDialog):
     def _accept(self) -> None:
         key = self.key_edit.text().strip()
         if not key:
-            QMessageBox.warning(self, "Missing key", "Variable key cannot be empty.")
+            QMessageBox.warning(self, "Validation Error", "Variable key cannot be empty.")
             return
 
         file_name = self.file_edit.text().strip() or "main.yml"
@@ -218,17 +266,17 @@ class VariableDialog(QDialog):
         if encrypt and "vault" not in file_name.lower():
             answer = QMessageBox.question(
                 self,
-                "Encrypting plain file?",
-                f"You are about to encrypt '{file_name}'. This will make the ENTIRE file unreadable without a password.\n\n"
-                "Usually, it is better to use a file like 'vault.yml' for secrets.\n\n"
-                "Do you want to change the filename to 'vault.yml' instead?",
+                "Security Recommendation",
+                f"You are about to encrypt '{file_name}'. This will secure the ENTIRE file.\n\n"
+                "Standard practice is to use 'vault.yml' for secrets.\n\n"
+                "Switch to 'vault.yml'?",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No | QMessageBox.StandardButton.Cancel,
                 QMessageBox.StandardButton.Yes
             )
             if answer == QMessageBox.StandardButton.Yes:
                 file_name = "vault.yml"
                 self.file_edit.setText(file_name)
-                return # Let user check again
+                return 
             elif answer == QMessageBox.StandardButton.Cancel:
                 return
 
@@ -236,7 +284,7 @@ class VariableDialog(QDialog):
         try:
             value = _yaml_loader.load(raw_value) if raw_value else None
         except Exception as exc:
-            QMessageBox.warning(self, "Invalid value", f"YAML parsing failed: {exc}")
+            QMessageBox.warning(self, "YAML Error", f"Failed to parse value: {exc}")
             return
 
         self._value = (key, value, file_name, encrypt)
@@ -250,7 +298,7 @@ class VariableDialog(QDialog):
 class MainWindow(QMainWindow):
     def __init__(self, workspace: str | Path | None = None) -> None:
         super().__init__()
-        self.setWindowTitle("Inventory Editor")
+        self.setWindowTitle("Ansible Inventory Editor")
         self.resize(1600, 980)
         self.statusBar().showMessage("Ready")
 
@@ -265,75 +313,112 @@ class MainWindow(QMainWindow):
         self._current_group: str | None = None
         self._current_host: str | None = None
         self._current_branch_group: str | None = None
-        self._current_file_path: str | None = None
-        self._current_file_kind: str | None = None
 
+        self._setup_ui()
+        self._setup_menu()
+        self._update_action_states()
+
+        if workspace is not None:
+            self.path_edit.setText(str(Path(workspace).expanduser().resolve()))
+            self._load_workspace()
+        elif settings.default_workspace:
+            self.path_edit.setText(settings.default_workspace)
+
+    def _setup_ui(self) -> None:
+        # --- Toolbar ---
+        toolbar = QToolBar("Main Toolbar")
+        toolbar.setMovable(False)
+        toolbar.setIconSize(QSize(24, 24))
+        self.addToolBar(toolbar)
+        
+        toolbar.addWidget(QLabel("  Workspace: "))
         self.path_edit = QLineEdit()
-        self.path_edit.setPlaceholderText("Workspace path")
+        self.path_edit.setPlaceholderText("Path to Ansible inventory directory...")
+        self.path_edit.setMinimumWidth(400)
+        toolbar.addWidget(self.path_edit)
+        
+        self.browse_action = QAction("Browse", self)
+        self.browse_action.setToolTip("Browse for workspace directory")
+        self.browse_action.triggered.connect(self._browse_workspace)
+        toolbar.addAction(self.browse_action)
+        
+        toolbar.addSeparator()
+        
+        self.save_action = QAction("Save", self)
+        self.save_action.setToolTip("Save changes (Ctrl+S)")
+        self.save_action.triggered.connect(self._export_workspace)
+        toolbar.addAction(self.save_action)
+        
+        self.settings_action = QAction("Settings", self)
+        self.settings_action.setToolTip("Configure application settings")
+        self.settings_action.triggered.connect(self._open_settings)
+        toolbar.addAction(self.settings_action)
+        
+        toolbar.addSeparator()
+        
+        self.find_action = QAction("Find", self)
+        self.find_action.setToolTip("Search in inventory (Ctrl+F)")
+        self.find_action.triggered.connect(self._find_entry)
+        toolbar.addAction(self.find_action)
 
-        browse_button = QPushButton("Browse")
-        load_button = QPushButton("Load")
-        reload_button = QPushButton("Reload")
-        find_button = QPushButton("Find")
-        add_group_button = QPushButton("Add group")
-        add_host_button = QPushButton("Add host")
-        add_variable_button = QPushButton("Add variable")
-        export_button = QPushButton("Export")
-        settings_button = QPushButton("Settings")
+        toolbar.addSeparator()
+        
+        # Action-icons for Inventory management
+        self.add_group_action = QAction("+ Group", self)
+        self.add_group_action.setToolTip("Add new group (to selected node)")
+        self.add_group_action.triggered.connect(self._add_group)
+        toolbar.addAction(self.add_group_action)
+        
+        self.add_host_action = QAction("+ Host", self)
+        self.add_host_action.setToolTip("Add new host to selected group")
+        self.add_host_action.triggered.connect(self._add_host)
+        toolbar.addAction(self.add_host_action)
+        
+        self.add_var_action = QAction("+ Var", self)
+        self.add_var_action.setToolTip("Add variable to selected node")
+        self.add_var_action.triggered.connect(self._add_variable)
+        toolbar.addAction(self.add_var_action)
 
-        browse_button.clicked.connect(self._browse_workspace)
-        load_button.clicked.connect(self._load_workspace)
-        reload_button.clicked.connect(self._reload_workspace)
-        find_button.clicked.connect(self._find_entry)
-        add_group_button.clicked.connect(self._add_group)
-        add_host_button.clicked.connect(self._add_host)
-        add_variable_button.clicked.connect(self._add_variable)
-        export_button.clicked.connect(self._export_workspace)
-        settings_button.clicked.connect(self._open_settings)
-
-        top_row = QHBoxLayout()
-        top_row.addWidget(QLabel("Workspace:"))
-        top_row.addWidget(self.path_edit, 1)
-        top_row.addWidget(browse_button)
-        top_row.addWidget(load_button)
-        top_row.addWidget(reload_button)
-        top_row.addWidget(find_button)
-        top_row.addWidget(export_button)
-        top_row.addWidget(settings_button)
-        top_row.addWidget(add_group_button)
-        top_row.addWidget(add_host_button)
-        top_row.addWidget(add_variable_button)
-
+        # --- Central Area ---
+        splitter = QSplitter(Qt.Orientation.Horizontal)
+        
+        # Left: Inventory Tree
         self.tree = QTreeWidget()
-        self.tree.setHeaderLabels(["Name", "Type"])
+        self.tree.setHeaderLabels(["Name", "Status"])
         self.tree.itemSelectionChanged.connect(self._on_tree_selection_changed)
-        self.tree.setMinimumWidth(420)
+        self.tree.setMinimumWidth(350)
         self.tree.header().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        self.tree.header().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        splitter.addWidget(self.tree)
 
+        # Right: Tabs
         self.tabs = QTabWidget()
+        splitter.addWidget(self.tabs)
+        splitter.setSizes([450, 1150])
 
+        # Tab: Overview
         self.overview_text = QTextEdit()
         self.overview_text.setReadOnly(True)
+        self.tabs.addTab(self.overview_text, "Overview")
 
+        # Tab: Variables (Vertical Splitter)
         self.variables_tree = QTreeWidget()
         self.variables_tree.setHeaderLabels(["Key", "Value", "Scope", "Source"])
         self.variables_tree.itemSelectionChanged.connect(self._on_variable_selection_changed)
         self.variables_tree.itemDoubleClicked.connect(self._on_variable_double_clicked)
         self.variables_tree.header().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
         self.variables_tree.header().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-        self.variables_tree.header().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
-        self.variables_tree.header().setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
 
         self.trace_text = QTextEdit()
         self.trace_text.setReadOnly(True)
 
-        self.variables_splitter = QSplitter(Qt.Orientation.Vertical)
-        self.variables_splitter.addWidget(self.variables_tree)
-        self.variables_splitter.addWidget(self.trace_text)
-        self.variables_splitter.setStretchFactor(0, 3)
-        self.variables_splitter.setStretchFactor(1, 2)
+        var_split = QSplitter(Qt.Orientation.Vertical)
+        var_split.addWidget(self.variables_tree)
+        var_split.addWidget(self.trace_text)
+        var_split.setStretchFactor(0, 3)
+        var_split.setStretchFactor(1, 1)
+        self.tabs.addTab(var_split, "Variables")
 
+        # Tab: Files
         self.files_tree = QTreeWidget()
         self.files_tree.setHeaderLabels(["Kind", "Path"])
         self.files_tree.itemSelectionChanged.connect(self._on_file_selection_changed)
@@ -342,49 +427,133 @@ class MainWindow(QMainWindow):
 
         self.file_preview = QTextEdit()
         self.file_preview.setReadOnly(True)
+        self.file_preview.setFont(QFont("Menlo", 10) if os.name != 'nt' else QFont("Consolas", 10))
+        
+        self.edit_file_btn = QPushButton("Open in Internal Editor")
+        self.edit_file_btn.clicked.connect(self._open_source)
 
-        file_buttons = QHBoxLayout()
-        self.open_source_button = QPushButton("Open source")
-        self.open_source_button.clicked.connect(self._open_source)
-        file_buttons.addWidget(self.open_source_button)
-        file_buttons.addStretch(1)
+        file_cont = QWidget()
+        file_lay = QVBoxLayout(file_cont)
+        file_lay.addWidget(self.files_tree, 2)
+        file_lay.addWidget(self.edit_file_btn)
+        file_lay.addWidget(self.file_preview, 1)
+        self.tabs.addTab(file_cont, "Files")
 
-        self.files_container = QWidget()
-        files_layout = QVBoxLayout(self.files_container)
-        files_layout.addWidget(self.files_tree, 1)
-        files_layout.addLayout(file_buttons)
-        files_layout.addWidget(self.file_preview)
-
+        # Tab: Issues
         self.issues_text = QTextEdit()
         self.issues_text.setReadOnly(True)
-
-        self.tabs.addTab(self.overview_text, "Overview")
-        self.tabs.addTab(self.variables_splitter, "Variables")
-        self.tabs.addTab(self.files_container, "Files")
         self.tabs.addTab(self.issues_text, "Issues")
 
-        splitter = QSplitter()
-        splitter.addWidget(self.tree)
-        splitter.addWidget(self.tabs)
-        splitter.setStretchFactor(0, 4)
-        splitter.setStretchFactor(1, 6)
-        splitter.setSizes([560, 1040])
+        self.setCentralWidget(splitter)
 
-        central = QWidget()
-        layout = QVBoxLayout(central)
-        layout.addLayout(top_row)
-        layout.addWidget(splitter, 1)
-        self.setCentralWidget(central)
+    def _setup_menu(self) -> None:
+        mb = self.menuBar()
+        
+        # File
+        file_m = mb.addMenu("&File")
+        
+        new_act = QAction("&New Project...", self)
+        new_act.triggered.connect(self._new_project)
+        file_m.addAction(new_act)
+        
+        file_m.addSeparator()
+        
+        load_act = QAction("&Load Workspace", self)
+        load_act.triggered.connect(self._load_workspace)
+        file_m.addAction(load_act)
+        
+        reload_act = QAction("&Reload", self)
+        reload_act.setShortcut("Ctrl+R")
+        reload_act.triggered.connect(self._reload_workspace)
+        file_m.addAction(reload_act)
+        
+        file_m.addSeparator()
+        
+        save_act = QAction("&Save", self)
+        save_act.setShortcut("Ctrl+S")
+        save_act.triggered.connect(self._export_workspace)
+        file_m.addAction(save_act)
+        
+        file_m.addSeparator()
+        
+        exit_act = QAction("E&xit", self)
+        exit_act.triggered.connect(self.close)
+        file_m.addAction(exit_act)
+        
+        # Inventory
+        inv_m = mb.addMenu("&Inventory")
+        inv_m.addAction(self.add_group_action)
+        inv_m.addAction(self.add_host_action)
+        inv_m.addSeparator()
+        inv_m.addAction(self.add_var_action)
+        
+        # Tools
+        tools_m = mb.addMenu("&Tools")
+        tools_m.addAction(self.find_action)
+        
+        set_act = QAction("&Settings", self)
+        set_act.triggered.connect(self._open_settings)
+        tools_m.addAction(set_act)
+        
+        # Help
+        help_m = mb.addMenu("&Help")
+        about_act = QAction("&About", self)
+        about_act.triggered.connect(self._open_about)
+        help_m.addAction(about_act)
 
-        if workspace is not None:
-            self.path_edit.setText(str(Path(workspace).expanduser().resolve()))
-            self._load_workspace()
-        elif settings.default_workspace:
-            self.path_edit.setText(settings.default_workspace)
+    def _update_action_states(self) -> None:
+        """Dynamically enable/disable buttons based on selection."""
+        has_proj = self._project is not None
+        
+        # Add Group: Root or Group selected
+        self.add_group_action.setEnabled(has_proj)
+        
+        # Add Host: Only if a Group is selected
+        self.add_host_action.setEnabled(has_proj and self._current_mode == "group")
+        
+        # Add Var: Group or Host selected
+        self.add_var_action.setEnabled(has_proj and self._current_mode in ("group", "host"))
+        
+        self.save_action.setEnabled(has_proj)
+        self.find_action.setEnabled(has_proj)
+
+    def _open_about(self) -> None:
+        AboutDialog(self).exec()
 
     def _open_settings(self) -> None:
-        dialog = SettingsDialog(self)
-        dialog.exec()
+        if SettingsDialog(self).exec() == QDialog.DialogCode.Accepted:
+            if self._workspace_path:
+                self._reload_workspace()
+
+    def _new_project(self) -> None:
+        path = QFileDialog.getExistingDirectory(self, "Select directory for NEW project")
+        if not path: return
+        
+        root = Path(path)
+        if any(root.iterdir()):
+            ans = QMessageBox.warning(self, "Directory not empty", 
+                                     "The directory is not empty. Initialize anyway?",
+                                     QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+            if ans != QMessageBox.StandardButton.Yes: return
+            
+        try:
+            # 1. Base files
+            (root / "group_vars" / "all").mkdir(parents=True, exist_ok=True)
+            (root / "host_vars").mkdir(parents=True, exist_ok=True)
+            
+            inv_file = root / "inventory.yml"
+            if not inv_file.exists():
+                inv_file.write_text("# Created by Ansible Inventory Editor\nall:\n  hosts:\n    localhost:\n      ansible_connection: local\n", encoding="utf-8")
+            
+            all_file = root / "group_vars" / "all" / "main.yml"
+            if not all_file.exists():
+                all_file.write_text("# Global variables\nansible_python_interpreter: auto_silent\n", encoding="utf-8")
+                
+            self.path_edit.setText(str(root))
+            self._load_workspace()
+            QMessageBox.information(self, "Success", f"Project initialized at {root}")
+        except Exception as e:
+            QMessageBox.critical(self, "Init Failed", str(e))
 
     def _browse_workspace(self) -> None:
         selected = QFileDialog.getExistingDirectory(self, "Select inventory workspace", self.path_edit.text())
@@ -394,9 +563,7 @@ class MainWindow(QMainWindow):
 
     def _load_workspace(self) -> None:
         raw_path = self.path_edit.text().strip()
-        if not raw_path:
-            QMessageBox.warning(self, "Missing workspace", "Enter a workspace path first.")
-            return
+        if not raw_path: return
 
         try:
             project, scan = load_inventory_workspace(
@@ -406,9 +573,8 @@ class MainWindow(QMainWindow):
             )
             report = analyze_workspace_scan(scan)
             overview = build_workspace_overview(project, scan, report)
-        except Exception as exc:  # pragma: no cover - UI error path
+        except Exception as exc: 
             QMessageBox.critical(self, "Load failed", str(exc))
-            self.file_preview.setPlainText(str(exc))
             return
 
         self._workspace_path = Path(raw_path).expanduser().resolve()
@@ -418,191 +584,182 @@ class MainWindow(QMainWindow):
         self._overview = overview
         self._dirty = False
 
-        self._current_mode = None
-        self._current_group = None
-        self._current_host = None
-        self._current_branch_group = None
-        self._current_file_path = None
-        self._current_file_kind = None
-
         self._rebuild_tree()
         self._show_overview()
+        self._update_action_states()
         self.statusBar().showMessage(f"Loaded: {self._workspace_path}")
 
-    def _group_parent_map(self) -> dict[str, set[str]]:
-        parent_map: dict[str, set[str]] = {}
-        if self._project is None:
-            return parent_map
+    def _reload_workspace(self) -> None:
+        # Capture current selection
+        mode = self._current_mode
+        group = self._current_group
+        host = self._current_host
 
-        for group_name, group in self._project.groups.items():
-            for child_name in group.children:
-                parent_map.setdefault(child_name, set()).add(group_name)
-        return parent_map
+        if self._dirty:
+            ans = QMessageBox.question(self, "Unsaved changes", "Discard changes and reload?", 
+                                      QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+            if ans != QMessageBox.StandardButton.Yes: return
+        
+        self._load_workspace()
+        
+        # Restore selection
+        if mode == "group":
+            self._select_in_tree("group", group)
+        elif mode == "host":
+            self._select_in_tree("host", host, group)
 
-    def _is_root_group(self, group_name: str) -> bool:
-        if self._project is None:
+    def _select_in_tree(self, kind: str, name: str, branch: str | None = None) -> None:
+        def walk(parent: QTreeWidgetItem | None = None):
+            count = self.tree.topLevelItemCount() if parent is None else parent.childCount()
+            for i in range(count):
+                item = self.tree.topLevelItem(i) if parent is None else parent.child(i)
+                data = item.data(0, Qt.ItemDataRole.UserRole)
+                if data and data[0] == kind and data[1] == name:
+                    if kind != "host" or data[2] == branch:
+                        self.tree.setCurrentItem(item)
+                        item.setSelected(True)
+                        self._expand_item_path(item)
+                        return True
+                if walk(item): return True
             return False
-        if group_name == "all":
-            return False
-        parent_map = self._group_parent_map()
-        return group_name not in parent_map
+        walk()
 
     def _rebuild_tree(self) -> None:
         self.tree.clear()
-        if self._project is None:
-            return
+        if self._project is None: return
 
-        root = QTreeWidgetItem(["Inventory", "root"])
-        root.setData(0, Qt.ItemDataRole.UserRole, ("root", None))
-        self.tree.addTopLevelItem(root)
-        root.setExpanded(True)
+        root_item = QTreeWidgetItem(["Inventory", "root"])
+        root_item.setData(0, Qt.ItemDataRole.UserRole, ("root", None))
+        self.tree.addTopLevelItem(root_item)
 
+        # Build groups starting from 'all'
         all_item = self._build_group_item("all")
-        root.addChild(all_item)
+        root_item.addChild(all_item)
 
-        ungrouped_item = QTreeWidgetItem(["ungrouped", "special"])
-        ungrouped_item.setData(0, Qt.ItemDataRole.UserRole, ("group", "ungrouped"))
-        self._style_item(ungrouped_item, "#757575", bold=True)
-        for host_name in sorted(
-            host_name for host_name, host in self._project.hosts.items() if not host.groups
-        ):
-            ungrouped_item.addChild(self._build_host_item(host_name, "ungrouped"))
-        root.addChild(ungrouped_item)
+        # Ungrouped
+        ungrouped = QTreeWidgetItem(["ungrouped", "special"])
+        ungrouped.setData(0, Qt.ItemDataRole.UserRole, ("group", "ungrouped"))
+        self._style_item(ungrouped, "#757575", bold=True)
+        for h_name in sorted(h for h, host in self._project.hosts.items() if not host.groups):
+            ungrouped.addChild(self._build_host_item(h_name, "ungrouped"))
+        root_item.addChild(ungrouped)
 
-        for group_name in sorted(
-            group_name for group_name in self._project.groups if self._is_root_group(group_name)
-        ):
-            if group_name == "all":
-                continue
-            root.addChild(self._build_group_item(group_name))
+        # Other top-level groups
+        parents = self._group_parent_map()
+        for g_name in sorted(self._project.groups):
+            if g_name != "all" and g_name not in parents:
+                root_item.addChild(self._build_group_item(g_name))
 
-        self.tree.expandAll()
+        self.tree.expandToDepth(1)
 
     def _build_group_item(self, group_name: str) -> QTreeWidgetItem:
-        if self._project is None:
-            return QTreeWidgetItem()
-
         group = self._project.groups.get(group_name)
-        if group is None:
-            item = QTreeWidgetItem([group_name, "group"])
-            item.setData(0, Qt.ItemDataRole.UserRole, ("group", group_name))
-            return item
+        if not group: return QTreeWidgetItem([group_name, "error"])
 
-        item = QTreeWidgetItem([group_name, f"vars={len(group.variables)} hosts={len(group.hosts)}"])
+        item = QTreeWidgetItem([group_name, f"vars:{len(group.variables)}"])
         item.setData(0, Qt.ItemDataRole.UserRole, ("group", group_name))
         self._style_item(item, "#1565c0", bold=True)
 
-        for child_name in sorted(group.children):
-            if child_name in self._project.groups:
-                item.addChild(self._build_group_item(child_name))
-
-        for host_name in sorted(group.hosts):
-            item.addChild(self._build_host_item(host_name, group_name))
-
+        for child in sorted(group.children):
+            item.addChild(self._build_group_item(child))
+        for host in sorted(group.hosts):
+            item.addChild(self._build_host_item(host, group_name))
         return item
 
-    def _build_host_item(self, host_name: str, branch_group: str) -> QTreeWidgetItem:
-        if self._project is None:
-            return QTreeWidgetItem()
-
+    def _build_host_item(self, host_name: str, branch: str) -> QTreeWidgetItem:
         host = self._project.hosts.get(host_name)
-        var_count = len(host.variables) if host is not None else 0
-        item = QTreeWidgetItem([host_name, f"branch={branch_group} vars={var_count}"])
-        item.setData(0, Qt.ItemDataRole.UserRole, ("host", host_name, branch_group))
-        self._style_item(item, "#2e7d32", bold=False)
+        v_count = len(host.variables) if host else 0
+        item = QTreeWidgetItem([host_name, f"vars:{v_count}"])
+        item.setData(0, Qt.ItemDataRole.UserRole, ("host", host_name, branch))
+        self._style_item(item, "#2e7d32")
         return item
 
     def _style_item(self, item: QTreeWidgetItem, color: str, bold: bool = False) -> None:
         brush = QBrush(QColor(color))
-        for column in range(2):
-            item.setForeground(column, brush)
+        item.setForeground(0, brush)
         if bold:
-            font = QFont()
-            font.setBold(True)
-            item.setFont(0, font)
-
-    def _show_overview(self) -> None:
-        if self._overview is None:
-            self.overview_text.setPlainText("No workspace loaded.")
-            self.issues_text.setPlainText("No workspace loaded.")
-            return
-
-        lines = ["Workspace overview", ""]
-        for label, value in self._overview.stats:
-            lines.append(f"{label}: {value}")
-        self.overview_text.setPlainText("\n".join(lines))
-        self.issues_text.setPlainText("\n".join(self._overview.issues) if self._overview.issues else "No issues found.")
-
-        self.variables_tree.clear()
-        self.trace_text.clear()
-        self.files_tree.clear()
-        self.file_preview.clear()
+            f = item.font(0)
+            f.setBold(True)
+            item.setFont(0, f)
 
     def _on_tree_selection_changed(self) -> None:
-        if self._project is None or self._scan is None:
-            return
-
         items = self.tree.selectedItems()
-        if not items:
-            return
-
-        item = items[0]
-        payload = item.data(0, Qt.ItemDataRole.UserRole)
-        if not payload:
-            return
+        if not items: return
+        
+        payload = items[0].data(0, Qt.ItemDataRole.UserRole)
+        if not payload: return
 
         kind = payload[0]
         if kind == "root":
+            self._current_mode, self._current_group, self._current_host = "root", None, None
             self._show_overview()
-            self._current_mode = None
-            self._current_group = None
-            self._current_host = None
-            self._current_branch_group = None
-            return
+        elif kind == "group":
+            self._current_mode, self._current_group, self._current_host = "group", payload[1], None
+            self._show_group_context(payload[1])
+        elif kind == "host":
+            self._current_mode, self._current_host, self._current_group = "host", payload[1], payload[2]
+            self._show_host_context(payload[1], payload[2])
+            
+        self._update_action_states()
 
-        if kind == "group":
-            group_name = payload[1]
-            self._current_mode = "group"
-            self._current_group = group_name
-            self._current_host = None
-            self._current_branch_group = None
-            self._show_group_context(group_name)
-            return
+    def _show_overview(self) -> None:
+        if not self._overview: return
+        lines = ["Project Overview", ""] + [f"{l}: {v}" for l, v in self._overview.stats]
+        self.overview_text.setPlainText("\n".join(lines))
+        self.issues_text.setPlainText("\n".join(self._overview.issues) or "No issues.")
+        self.variables_tree.clear()
+        self.files_tree.clear()
 
-        if kind == "host":
-            host_name = payload[1]
-            branch_group = payload[2]
-            self._current_mode = "host"
-            self._current_group = branch_group
-            self._current_host = host_name
-            self._current_branch_group = branch_group
-            self._show_host_context(host_name, branch_group)
-            return
+    def _show_group_context(self, name: str) -> None:
+        view = build_group_context_view(self._project, self._scan, name)
+        self.overview_text.setPlainText("\n".join(view.summary_lines))
+        self._populate_variables_tree(view.variables)
+        self._populate_files_tree(view.files)
+        self.trace_text.setPlainText(f"Group: {name}\nHosts: {', '.join(view.hosts) or '-'}")
+
+    def _show_host_context(self, name: str, branch: str) -> None:
+        view = build_host_context_view(self._project, self._scan, name, branch)
+        self.overview_text.setPlainText("\n".join(view.summary_lines))
+        self._populate_variables_tree(view.variables)
+        self._populate_files_tree(view.files)
+        self.trace_text.setPlainText("Double-click a masked value to reveal for 10s.")
 
     def _populate_variables_tree(self, rows: list[object]) -> None:
         self.variables_tree.clear()
         for row in sorted(rows, key=self._variable_sort_key):
-            # Mask value if it's from a vault file
             is_vault = "vault" in row.source_path.lower()
-            display_value = "********" if is_vault else row.value_text
-
-            item = QTreeWidgetItem([row.key, display_value, row.scope, row.source_path])
+            val = "********" if is_vault else row.value_text
+            item = QTreeWidgetItem([row.key, val, row.scope, row.source_path])
             item.setData(0, Qt.ItemDataRole.UserRole, row.key)
-            # Store real value for double-click reveal
-            item.setData(1, Qt.ItemDataRole.UserRole, row.value_text)
+            item.setData(1, Qt.ItemDataRole.UserRole, row.value_text) # Store real val
             self._style_item(item, row.color)
             self.variables_tree.addTopLevelItem(item)
-        self.variables_tree.resizeColumnToContents(0)
-        self.variables_tree.resizeColumnToContents(2)
 
-    def _on_variable_double_clicked(self, item: QTreeWidgetItem, column: int) -> None:
-        if column == 1: # Value column
-            real_value = item.data(1, Qt.ItemDataRole.UserRole)
-            if real_value:
-                item.setText(1, real_value)
-                # Auto-hide after 10 seconds
-                from PySide6.QtCore import QTimer
+    def _on_variable_double_clicked(self, item: QTreeWidgetItem, col: int) -> None:
+        if col == 1:
+            real = item.data(1, Qt.ItemDataRole.UserRole)
+            if real and item.text(1) == "********":
+                item.setText(1, real)
                 QTimer.singleShot(10000, lambda: item.setText(1, "********"))
+
+    def _on_variable_selection_changed(self) -> None:
+        items = self.variables_tree.selectedItems()
+        if not items:
+            self.trace_text.clear()
+            return
+
+        item = items[0]
+        key = item.text(0)
+        value = item.text(1)
+        scope = item.text(2)
+        source = item.text(3)
+
+        self.trace_text.setPlainText(
+            f"Variable: {key}\n"
+            f"Value: {value}\n"
+            f"Scope: {scope}\n"
+            f"Source: {source}"
+        )
 
     def _populate_files_tree(self, rows: list[object]) -> None:
         self.files_tree.clear()
@@ -611,535 +768,139 @@ class MainWindow(QMainWindow):
             item.setData(0, Qt.ItemDataRole.UserRole, (row.kind, row.path))
             self._style_item(item, row.color)
             self.files_tree.addTopLevelItem(item)
-        self.files_tree.resizeColumnToContents(0)
-
-    def _show_group_context(self, group_name: str) -> None:
-        if self._project is None or self._scan is None:
-            return
-
-        view = build_group_context_view(self._project, self._scan, group_name)
-        self.overview_text.setPlainText("\n".join(view.summary_lines))
-        self._populate_variables_tree(view.variables)
-        if hasattr(self, "_populate_files_tree"):
-            self._populate_files_tree(view.files)
-        else:
-            self.statusBar().showMessage("Warning: _populate_files_tree missing!")
-        self.trace_text.setPlainText(
-            "Group context\n\n"
-            f"Hosts: {', '.join(view.hosts) if view.hosts else '-'}\n"
-            f"Child groups: {', '.join(view.children) if view.children else '-'}\n"
-            "Select a variable to see its source path."
-        )
-        self.file_preview.setPlainText("")
-        self.issues_text.setPlainText(
-            "\n".join(self._overview.issues) if self._overview and self._overview.issues else "No issues found."
-        )
-
-    def _show_host_context(self, host_name: str, branch_group: str | None) -> None:
-        if self._project is None or self._scan is None:
-            return
-
-        view = build_host_context_view(self._project, self._scan, host_name, branch_group)
-        content = "\n".join(view.summary_lines)
-        if view.cli_suggestions:
-            content += "\n\nCLI Suggestions:\n" + "\n".join(view.cli_suggestions)
-
-        self.overview_text.setPlainText(content)
-        self._populate_variables_tree(view.variables)
-        if hasattr(self, "_populate_files_tree"):
-            self._populate_files_tree(view.files)
-        else:
-            self.statusBar().showMessage("Warning: _populate_files_tree missing!")
-        self.trace_text.setPlainText("Select a variable to see its trace.")
-        self.file_preview.setPlainText("")
-        self.issues_text.setPlainText(
-            "\n".join(self._overview.issues) if self._overview and self._overview.issues else "No issues found."
-        )
-
-
-    def _variable_sort_key(self, row: object) -> tuple[int, str, str]:
-        source_path = str(getattr(row, "source_path", ""))
-        key = str(getattr(row, "key", ""))
-        if source_path.startswith("group_vars/all/"):
-            priority = 0
-        elif source_path.startswith("group_vars/"):
-            priority = 1
-        elif source_path.startswith("host_vars/"):
-            priority = 2
-        else:
-            priority = 3
-        return priority, source_path, key
-
-    def _find_entry(self) -> None:
-        text, ok = QInputDialog.getText(self, "Find", "Search text:")
-        if not ok:
-            return
-
-        needle = text.strip().lower()
-        if not needle:
-            return
-
-        search_order = [
-            (self.tree, None),
-            (self.variables_tree, self.tabs.indexOf(self.variables_splitter)),
-            (self.files_tree, self.tabs.indexOf(self.files_container)),
-        ]
-
-        for widget, tab_index in search_order:
-            item = self._find_in_tree(widget, needle)
-            if item is not None:
-                if tab_index is not None:
-                    self.tabs.setCurrentIndex(tab_index)
-                widget.setCurrentItem(item)
-                widget.scrollToItem(item)
-                self.statusBar().showMessage(f"Found: {text}")
-                return
-
-        QMessageBox.information(self, "Find", f"No match for '{text}'.")
-
-    def _find_in_tree(self, tree: QTreeWidget, needle: str) -> QTreeWidgetItem | None:
-        def matches(item: QTreeWidgetItem) -> bool:
-            for column in range(item.columnCount()):
-                value = item.text(column).strip().lower()
-                if needle in value:
-                    return True
-            return False
-
-        def walk(parent: QTreeWidgetItem | None = None) -> QTreeWidgetItem | None:
-            count = tree.topLevelItemCount() if parent is None else parent.childCount()
-            for index in range(count):
-                item = tree.topLevelItem(index) if parent is None else parent.child(index)
-                if item is None:
-                    continue
-                if matches(item):
-                    self._expand_item_path(item)
-                    return item
-                found = walk(item)
-                if found is not None:
-                    return found
-            return None
-
-        return walk()
-
-    def _expand_item_path(self, item: QTreeWidgetItem) -> None:
-        current = item.parent()
-        while current is not None:
-            current.setExpanded(True)
-            current = current.parent()
-
-    def _reload_workspace(self) -> None:
-        if self._dirty:
-            answer = QMessageBox.question(
-                self,
-                "Reload workspace",
-                "Discard unsaved changes and reload the current workspace?",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                QMessageBox.StandardButton.No,
-            )
-            if answer != QMessageBox.StandardButton.Yes:
-                return
-        self._load_workspace()
-
-    def closeEvent(self, event) -> None:  # type: ignore[override]
-        if not self._dirty:
-            event.accept()
-            return
-
-        answer = QMessageBox.question(
-            self,
-            "Exit",
-            "You have unsaved changes. Export before exit?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No | QMessageBox.StandardButton.Cancel,
-            QMessageBox.StandardButton.Yes,
-        )
-        if answer == QMessageBox.StandardButton.Yes:
-            try:
-                self._export_workspace()
-            except Exception:
-                event.ignore()
-                return
-            event.accept()
-            return
-        if answer == QMessageBox.StandardButton.No:
-            event.accept()
-            return
-
-        event.ignore()
-
-    def _open_external(self, file_path: Path) -> None:
-        resolved = str(file_path.resolve())
-        import sys
-
-        cmds = []
-        if sys.platform == "darwin":
-            cmds.append(["open", resolved])
-        elif sys.platform == "win32":
-            cmds.append(["start", resolved])
-        
-        cmds.extend([
-            ["xdg-open", resolved],
-            ["gio", "open", resolved],
-            ["kde-open5", resolved],
-        ])
-
-        for cmd in cmds:
-            if shutil.which(cmd[0]):
-                try:
-                    result = subprocess.run(cmd, check=False)
-                    if result.returncode == 0:
-                        return
-                except Exception:
-                    continue
-
-        QMessageBox.critical(
-            self,
-            "Open failed",
-            f"Cannot open file: {resolved}\n\nMake sure the file exists and you have permission to open it.",
-        )
-
-    def _current_variable_key(self) -> str | None:
-        items = self.variables_tree.selectedItems()
-        if not items:
-            return None
-        return str(items[0].data(0, Qt.ItemDataRole.UserRole) or "").strip() or None
-
-    def _on_variable_selection_changed(self) -> None:
-        if self._project is None or self._scan is None:
-            return
-
-        key = self._current_variable_key()
-        if not key:
-            return
-
-        if self._current_mode == "host" and self._current_host is not None:
-            branch_group = self._current_branch_group
-            from inventory_editor.analyzer.reporting import explain_variable_for_branch
-            self.trace_text.setPlainText(explain_variable_for_branch(self._project, self._current_host, branch_group, key))
-        elif self._current_mode == "group" and self._current_group is not None:
-            group = self._project.groups.get(self._current_group)
-            if group is None:
-                return
-            for variable in group.variables:
-                if variable.key == key:
-                    self.trace_text.setPlainText(
-                        "\n".join(
-                            [
-                                f"Group: {self._current_group}",
-                                f"Variable: {key}",
-                                f"Value: {variable.value}",
-                                f"Source: {variable.source.source_path}",
-                                f"Source type: {variable.source.source_type}",
-                            ]
-                        )
-                    )
-                    return
-
-    def _selected_file_info(self) -> tuple[str, str] | None:
-        items = self.files_tree.selectedItems()
-        if not items:
-            return None
-        payload = items[0].data(0, Qt.ItemDataRole.UserRole)
-        if not payload:
-            return None
-        return str(payload[0]), str(payload[1])
 
     def _on_file_selection_changed(self) -> None:
-        info = self._selected_file_info()
-        if info is None:
-            self._current_file_kind = None
-            self._current_file_path = None
+        items = self.files_tree.selectedItems()
+        if not items: 
             self.file_preview.clear()
             return
-
-        kind, path = info
-        self._current_file_kind = kind
-        self._current_file_path = path
-        self.file_preview.setPlainText(f"{kind}\n{path}")
+        kind, path = items[0].data(0, Qt.ItemDataRole.UserRole)
+        self.file_preview.setPlainText(f"File: {path}\nKind: {kind}")
 
     def _open_source(self) -> None:
-        info = self._selected_file_info()
-        if info is None:
-            QMessageBox.information(self, "Open source", "Select a file first.")
+        items = self.files_tree.selectedItems()
+        if not items: return
+        kind, path = items[0].data(0, Qt.ItemDataRole.UserRole)
+        file_path = Path(self._workspace_path) / path
+        
+        is_vault = (kind == "vault")
+        try:
+            if is_vault:
+                if not VaultHandler.has_credentials():
+                    if QMessageBox.question(self, "Vault", "No password set. Open Settings?", 
+                                           QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No) == QMessageBox.StandardButton.Yes:
+                        self._open_settings()
+                    if not VaultHandler.has_credentials(): return
+                content = VaultHandler.decrypt(file_path)
+            else:
+                content = file_path.read_text(encoding="utf-8")
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to open file: {e}")
             return
 
-        kind, path = info
-        file_path = Path(path)
-        if not file_path.exists() and self._workspace_path is not None:
-            file_path = self._workspace_path / path
-
-        is_vault = (kind == "vault")
-        content = ""
-        
-        # 1. Handle Decryption if needed
-        if is_vault:
-            if not settings.vault_password and not settings.vault_password_file:
-                answer = QMessageBox.question(
-                    self,
-                    "Vault Credentials Required",
-                    "This is an encrypted Vault file, but no Vault password is configured.\n\nOpen Settings to configure it?",
-                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                    QMessageBox.StandardButton.Yes
-                )
-                if answer == QMessageBox.StandardButton.Yes:
-                    self._open_settings()
-                
-                # Check again after settings dialog
-                if not settings.vault_password and not settings.vault_password_file:
-                    return
-
-            try:
-                content = VaultHandler.decrypt(file_path)
-            except Exception as e:
-                QMessageBox.critical(self, "Decryption failed", f"Could not decrypt vault file.\n\nError: {e}\n\nCheck your Vault password in Settings.")
-                return
+        if settings.external_editor and not is_vault:
+            subprocess.Popen([settings.external_editor, str(file_path.resolve())])
         else:
-            try:
-                content = file_path.read_text(encoding="utf-8")
-            except Exception as e:
-                QMessageBox.critical(self, "Read failed", str(e))
-                return
-
-        # 2. Open in Editor
-        if settings.external_editor:
-            # Use configured external editor
-            # For Vault files, we'd need to write to a temp file, open it, then re-encrypt.
-            # For now, let's keep it simple: external editor is for non-vault or raw vault content.
-            if is_vault:
-                QMessageBox.information(self, "Vault & External Editor", "Vault files are currently only supported in the internal editor for safety. Opening raw encrypted content.")
-            
-            cmd = [settings.external_editor, str(file_path.resolve())]
-            try:
-                subprocess.Popen(cmd)
-            except Exception as e:
-                QMessageBox.critical(self, "External editor failed", str(e))
-        else:
-            # Use internal editor
-            dialog = CodeEditorDialog(self, file_path, content, is_vault=is_vault)
-            if dialog.exec() == QDialog.DialogCode.Accepted:
-                self.statusBar().showMessage(f"Saved: {file_path.name}")
+            if CodeEditorDialog(self, file_path, content, is_vault).exec() == QDialog.DialogCode.Accepted:
                 self._reload_workspace()
 
-
     def _add_group(self) -> None:
-        if self._project is None:
-            return
-
-        group_name, ok = QInputDialog.getText(self, "Add group", "Group name:")
-        if not ok or not group_name.strip():
-            return
-
-        group_name = group_name.strip()
-        self._project.add_group(group_name)
-        self._dirty = True
-        self._rebuild_tree()
-        self.statusBar().showMessage(f"Added group: {group_name}")
+        name, ok = QInputDialog.getText(self, "Add Group", "Group Name:")
+        if ok and name.strip():
+            self._project.add_group(name.strip())
+            self._dirty = True
+            self._rebuild_tree()
 
     def _add_host(self) -> None:
-        if self._project is None:
-            return
-
-        target_group: str | None = None
-        if self._current_mode == "group" and self._current_group not in (None, "ungrouped"):
-            target_group = self._current_group
-        elif self._current_mode == "host" and self._current_branch_group not in (None, "ungrouped"):
-            target_group = self._current_branch_group
-
-        dialog = HostDialog(self, list(self._project.groups.keys()), initial_group=target_group)
-        if dialog.exec() != QDialog.DialogCode.Accepted:
-            return
-
-        host_name, target_groups = dialog.get_data()
-        if not host_name:
-            return
-
-        self._project.add_host(host_name)
-        for g in target_groups:
-            self._project.assign_host_to_group(host_name, g)
-
-        self._dirty = True
-        self._rebuild_tree()
-        self.statusBar().showMessage(
-            f"Added host: {host_name} to {', '.join(target_groups) if target_groups else 'no groups'}"
-        )
-
-    def _prompt_existing_variable_action(self, key: str, existing_values: list[str]) -> str | None:
-        box = QMessageBox(self)
-        box.setWindowTitle("Variable exists")
-        box.setIcon(QMessageBox.Icon.Warning)
-        box.setText(f"Variable '{key}' already exists in this context.")
-        box.setInformativeText(
-            "Choose how to proceed.\n\n"
-            f"Existing values: {', '.join(existing_values) if existing_values else '-'}"
-        )
-        replace_button = box.addButton("Replace", QMessageBox.ButtonRole.AcceptRole)
-        append_button = box.addButton("Append", QMessageBox.ButtonRole.ActionRole)
-        cancel_button = box.addButton(QMessageBox.StandardButton.Cancel)
-        box.exec()
-
-        clicked = box.clickedButton()
-        if clicked == replace_button:
-            return "replace"
-        if clicked == append_button:
-            return "append"
-        if clicked == cancel_button:
-            return None
-        return None
+        dialog = HostDialog(self, list(self._project.groups.keys()), self._current_group)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            name, gs = dialog.get_data()
+            if name:
+                self._project.add_host(name)
+                for g in gs: self._project.assign_host_to_group(name, g)
+                self._dirty = True
+                self._rebuild_tree()
 
     def _add_variable(self) -> None:
-        if self._project is None:
-            return
-
-        if self._current_mode not in {"group", "host"}:
-            QMessageBox.information(self, "Add variable", "Select a group or host first.")
-            return
-
-        dialog_title = "Add group variable" if self._current_mode == "group" else "Add host variable"
-        dialog = VariableDialog(self, dialog_title)
-        if dialog.exec() != QDialog.DialogCode.Accepted:
-            return
-
-        result = dialog.result_data
-        if result is None:
-            return
-
-        key, value, file_name, encrypt = result
-        file_name = file_name.strip() or "main.yml"
-        if not file_name.endswith((".yml", ".yaml")):
-            file_name += ".yml"
-
-        if self._current_mode == "group":
-            group_name = self._current_group
-            if not group_name:
-                return
-            source_path = f"group_vars/{group_name}/{file_name}"
+        dialog = VariableDialog(self, f"Add variable to {self._current_host or self._current_group}")
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            key, val, f_name, encrypt = dialog.result_data
+            if not f_name.endswith((".yml", ".yaml")): f_name += ".yml"
+            
+            target = self._current_host or self._current_group
+            is_host = self._current_host is not None
+            scope = VariableScope.HOST if is_host else VariableScope.GROUP
+            s_type = "host_vars" if is_host else "group_vars"
+            path = f"{s_type}/{target}/{f_name}"
             
             if encrypt:
                 if not hasattr(self._project, "vault_files"): self._project.vault_files = set()
-                self._project.vault_files.add(source_path)
-
-            existing = [
-                variable.value
-                for variable in self._project.groups.get(group_name, None).variables
-                if variable.key == key
-            ] if self._project.groups.get(group_name) is not None else []
-            action = None
-            if existing:
-                existing_text = [str(item) for item in existing]
-                if all(str(item) == str(value) for item in existing):
-                    QMessageBox.information(
-                        self,
-                        "Already exists",
-                        "The same key/value already exists in this group context. Nothing changed.",
-                    )
-                    return
-                action = self._prompt_existing_variable_action(key, existing_text)
-                if action is None:
-                    return
-
-            variable = Variable(
-                key=key,
-                value=value,
-                scope=VariableScope.GROUP,
-                owner=group_name,
-                source=VariableSource(source_path=source_path, source_type="group_vars"),
-            )
-
-            if action == "replace":
-                self._project.replace_variable_in_group(group_name, variable)
-            else:
-                self._project.add_variable_to_group(group_name, variable)
-
-            self._dirty = True
-            self._rebuild_tree()
-            self.statusBar().showMessage(f"Added group variable {key} to {group_name}")
-            return
-
-        host_name = self._current_host
-        branch_group = self._current_branch_group
-        if not host_name:
-            return
-
-        source_path = f"host_vars/{host_name}/{file_name}"
-        
-        if encrypt:
-            if not hasattr(self._project, "vault_files"): self._project.vault_files = set()
-            self._project.vault_files.add(source_path)
-
-        existing = [
-            variable.value
-            for variable in self._project.hosts.get(host_name, None).variables
-            if variable.key == key
-        ] if self._project.hosts.get(host_name) is not None else []
-        action = None
-        if existing:
-            existing_text = [str(item) for item in existing]
-            if all(str(item) == str(value) for item in existing):
-                QMessageBox.information(
-                    self,
-                    "Already exists",
-                    "The same key/value already exists on this host. Nothing changed.",
-                )
-                return
-            action = self._prompt_existing_variable_action(key, existing_text)
-            if action is None:
-                return
-
-        variable = Variable(
-            key=key,
-            value=value,
-            scope=VariableScope.HOST,
-            owner=host_name,
-            source=VariableSource(source_path=source_path, source_type="host_vars"),
-        )
-
-        if action == "replace":
-            self._project.replace_variable_in_host(host_name, variable)
-        else:
-            self._project.add_variable_to_host(host_name, variable)
-
-        self._dirty = True
-        self._rebuild_tree()
-        self.statusBar().showMessage(f"Added host variable {key} to {host_name} ({branch_group})")
-    def _export_workspace(self) -> None:
-        if self._project is None or self._workspace_path is None:
-            QMessageBox.warning(self, "Export", "Load a workspace first.")
-            return
-
-        # Check if we have vault files but no credentials
-        vault_files = getattr(self._project, "vault_files", set())
-        if vault_files and not VaultHandler.has_credentials():
-            answer = QMessageBox.question(
-                self,
-                "Vault Credentials Required",
-                f"Your project contains {len(vault_files)} Vault-encrypted file(s), but no Vault password is configured.\n\n"
-                "Exporting now will fail or hang when trying to encrypt these files.\n\n"
-                "Open Settings to configure a password?",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                QMessageBox.StandardButton.Yes
-            )
-            if answer == QMessageBox.StandardButton.Yes:
-                self._open_settings()
+                self._project.vault_files.add(path)
             
-            # Re-check after settings
-            if not VaultHandler.has_credentials():
-                return
+            v = Variable(key=key, value=val, scope=scope, owner=target, 
+                         source=VariableSource(source_path=path, source_type=s_type))
+            
+            if is_host: self._project.add_variable_to_host(target, v)
+            else: self._project.add_variable_to_group(target, v)
+            
+            self._dirty = True
+            self._reload_workspace()
 
-        if self._dirty:
-            proceed = QMessageBox.question(
-                self,
-                "Export workspace",
-                "Export changes back to the loaded workspace?",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                QMessageBox.StandardButton.No,
-            )
-            if proceed != QMessageBox.StandardButton.Yes:
-                return
+    def _export_workspace(self) -> None:
+        if not self._project: return
+        # Check vault credentials first
+        v_files = getattr(self._project, "vault_files", set())
+        if v_files and not VaultHandler.has_credentials():
+            if QMessageBox.question(self, "Vault", "Vault files detected but no password set. Open Settings?",
+                                   QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No) == QMessageBox.StandardButton.Yes:
+                self._open_settings()
+            if not VaultHandler.has_credentials(): return
 
         try:
             export_workspace(self._project, self._workspace_path)
             self._dirty = False
-            self.statusBar().showMessage(f"Exported to {self._workspace_path}")
-        except Exception as exc:
-            QMessageBox.critical(self, "Export failed", str(exc))
+            self.statusBar().showMessage(f"Successfully saved to {self._workspace_path}")
+            self._reload_workspace()
+        except Exception as e:
+            QMessageBox.critical(self, "Save Error", str(e))
 
+    def _find_entry(self) -> None:
+        text, ok = QInputDialog.getText(self, "Find", "Search text:")
+        if ok and text.strip():
+            # Basic logic search
+            needle = text.lower()
+            for i in range(self.tree.topLevelItemCount()):
+                item = self.tree.topLevelItem(i)
+                if needle in item.text(0).lower():
+                    self.tree.setCurrentItem(item)
+                    return
 
+    def _group_parent_map(self) -> dict[str, set[str]]:
+        pm = {}
+        if self._project:
+            for gn, g in self._project.groups.items():
+                for c in g.children: pm.setdefault(c, set()).add(gn)
+        return pm
+
+    def _expand_item_path(self, item: QTreeWidgetItem) -> None:
+        curr = item.parent()
+        while curr:
+            curr.setExpanded(True)
+            curr = curr.parent()
+
+    def closeEvent(self, event) -> None:
+        if self._dirty:
+            ans = QMessageBox.question(self, "Exit", "Save changes before exit?",
+                                      QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No | QMessageBox.StandardButton.Cancel)
+            if ans == QMessageBox.StandardButton.Yes:
+                self._export_workspace()
+                event.accept()
+            elif ans == QMessageBox.StandardButton.No: event.accept()
+            else: event.ignore()
+        else: event.accept()
+
+    def _variable_sort_key(self, row: object) -> tuple[int, str, str]:
+        sp = str(getattr(row, "source_path", ""))
+        k = str(getattr(row, "key", ""))
+        p = 0 if "all" in sp else 1 if "group_vars" in sp else 2
+        return p, sp, k
