@@ -423,6 +423,13 @@ class MainWindow(QMainWindow):
         self.add_var_action.triggered.connect(self._add_variable)
         toolbar.addAction(self.add_var_action)
 
+        toolbar.addSeparator()
+
+        self.effective_action = QAction("Effective", self)
+        self.effective_action.setToolTip("Show effective inventory variables for selected host or group")
+        self.effective_action.triggered.connect(self._show_effective_config)
+        toolbar.addAction(self.effective_action)
+
         # --- Central Area ---
         splitter = QSplitter(Qt.Orientation.Horizontal)
         
@@ -483,6 +490,36 @@ class MainWindow(QMainWindow):
         file_lay.addWidget(self.file_preview, 1)
         self.tabs.addTab(file_cont, "Files")
 
+        # Tab: Effective Config
+        effective_cont = QWidget()
+        effective_lay = QVBoxLayout(effective_cont)
+
+        effective_head = QHBoxLayout()
+        effective_head.addWidget(QLabel("Limit / pattern:"))
+
+        self.effective_limit_edit = QLineEdit()
+        self.effective_limit_edit.setPlaceholderText("Optional preview note, e.g. app_servers or vm-169")
+        effective_head.addWidget(self.effective_limit_edit)
+
+        self.effective_refresh_btn = QPushButton("Refresh")
+        self.effective_refresh_btn.setToolTip("Refresh effective variable view for the current selection")
+        self.effective_refresh_btn.clicked.connect(self._show_effective_config)
+        effective_head.addWidget(self.effective_refresh_btn)
+
+        effective_lay.addLayout(effective_head)
+
+        self.effective_text = QTextEdit()
+        self.effective_text.setReadOnly(True)
+        self.effective_text.setFont(QFont("Menlo", 10) if os.name != 'nt' else QFont("Consolas", 10))
+        self.effective_text.setPlainText(
+            "Select a host or group and click Effective.\n\n"
+            "This first version shows a static inventory-based preview from AIS.\n"
+            "It does not yet execute ansible-inventory or ansible-playbook."
+        )
+        effective_lay.addWidget(self.effective_text)
+
+        self.tabs.addTab(effective_cont, "Effective Config")
+
         # Tab: Issues
         self.issues_text = QTextEdit()
         self.issues_text.setReadOnly(True)
@@ -534,6 +571,7 @@ class MainWindow(QMainWindow):
         # Tools
         tools_m = mb.addMenu("&Tools")
         tools_m.addAction(self.find_action)
+        tools_m.addAction(self.effective_action)
         
         set_act = QAction("&Settings", self)
         set_act.triggered.connect(self._open_settings)
@@ -560,6 +598,7 @@ class MainWindow(QMainWindow):
         
         self.save_action.setEnabled(has_proj)
         self.find_action.setEnabled(has_proj)
+        self.effective_action.setEnabled(has_proj and self._current_mode in ("group", "host"))
 
     def _open_about(self) -> None:
         AboutDialog(self).exec()
@@ -898,6 +937,354 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(
                 f"Variable '{key}' added to {path}. Press Save to write changes."
             )
+
+    def _show_effective_config(self) -> None:
+        if not self._project:
+            self.statusBar().showMessage("No workspace loaded.", 5000)
+            return
+
+        if self._current_mode not in ("group", "host"):
+            self.effective_text.setPlainText(
+                "Select a host or group first.\n\n"
+                "The Effective Config view is calculated for the current inventory context."
+            )
+            self.tabs.setCurrentWidget(self.effective_text.parentWidget())
+            self.statusBar().showMessage("Select a host or group first.", 5000)
+            return
+
+        try:
+            lines = self._build_effective_config_lines()
+        except Exception as exc:
+            QMessageBox.critical(self, "Effective Config Error", str(exc))
+            return
+
+        self.effective_text.setPlainText("\n".join(lines))
+        self.tabs.setCurrentWidget(self.effective_text.parentWidget())
+        self.statusBar().showMessage("Effective config preview refreshed.", 5000)
+
+    def _build_effective_config_lines(self) -> list[str]:
+        limit = self.effective_limit_edit.text().strip() or "-"
+
+        lines: list[str] = []
+        lines.append("Effective Config Preview")
+        lines.append("=" * 100)
+        lines.append("Mode: Static AIS inventory resolution")
+        lines.append(f"Limit / pattern note: {limit}")
+        lines.append("")
+        lines.append(
+            "This view is based on the currently loaded AIS inventory model "
+            "(inventory, group_vars, host_vars and vault-backed variables)."
+        )
+        lines.append(
+            "It does not yet execute ansible-inventory or ansible-playbook, "
+            "so play vars, role vars, facts, set_fact and extra-vars are not included."
+        )
+        lines.append("")
+
+        if self._current_mode == "host":
+            return self._build_effective_host_lines(lines)
+
+        if self._current_mode == "group":
+            return self._build_effective_group_lines(lines)
+
+        lines.append("Select a host or group first.")
+        return lines
+
+    def _build_effective_group_lines(self, lines: list[str]) -> list[str]:
+        group_name = self._current_group
+        if not group_name:
+            lines.append("No group selected.")
+            return lines
+
+        hosts = self._hosts_for_group(group_name)
+
+        lines.append(f"Selected group: {group_name}")
+        lines.append("")
+        lines.append("Affected hosts")
+        lines.append("-" * 100)
+
+        if hosts:
+            for host in hosts:
+                lines.append(f"  - {host}")
+        else:
+            lines.append("  No hosts found in this group context.")
+            return lines
+
+        # Build effective rows for every affected host.
+        host_rows_map: dict[str, list[object]] = {}
+
+        for host_name in hosts:
+            try:
+                host_view = build_host_context_view(
+                    self._project,
+                    self._scan,
+                    host_name,
+                    group_name,
+                )
+                host_rows_map[host_name] = sorted(host_view.variables, key=self._variable_sort_key)
+            except Exception as exc:
+                lines.append("")
+                lines.append(f"Host {host_name}: failed to build context: {exc}")
+                host_rows_map[host_name] = []
+
+        common_rows = self._common_effective_rows(host_rows_map)
+
+        lines.append("")
+        lines.append("=" * 100)
+        lines.append("Common effective variables for all affected hosts")
+        lines.append("=" * 100)
+        lines.append(
+            "These variables have the same final value and source for every host in this group context."
+        )
+        lines.append("")
+
+        if common_rows:
+            self._append_effective_sections_by_source(lines, common_rows)
+        else:
+            lines.append("No common effective variables found across all affected hosts.")
+
+        lines.append("")
+        lines.append("=" * 100)
+        lines.append("Per-host effective variables and differences")
+        lines.append("=" * 100)
+
+        for host_name in hosts:
+            rows = host_rows_map.get(host_name, [])
+            final_by_key = self._effective_final_by_key(rows)
+            per_host_rows = [
+                row for key, row in sorted(final_by_key.items())
+                if key not in common_rows
+            ]
+
+            lines.append("")
+            lines.append(f"Host: {host_name}")
+            lines.append("-" * 100)
+
+            if not rows:
+                lines.append("No variables found.")
+                continue
+
+            if not per_host_rows:
+                lines.append("No host-specific differences. This host currently uses only common effective variables.")
+                continue
+
+            self._append_effective_sections_by_source(lines, {
+                str(getattr(row, "key", "")): row
+                for row in per_host_rows
+            })
+
+        return lines
+
+    def _common_effective_rows(self, host_rows_map: dict[str, list[object]]) -> dict[str, object]:
+        if not host_rows_map:
+            return {}
+
+        per_host_final: dict[str, dict[str, object]] = {
+            host: self._effective_final_by_key(rows)
+            for host, rows in host_rows_map.items()
+        }
+
+        hosts = list(per_host_final)
+        if not hosts:
+            return {}
+
+        first_host = hosts[0]
+        common: dict[str, object] = {}
+
+        for key, first_row in per_host_final[first_host].items():
+            first_value = self._effective_value_text(first_row)
+            first_source = str(getattr(first_row, "source_path", ""))
+            first_scope = str(getattr(first_row, "scope", ""))
+
+            same_everywhere = True
+
+            for host in hosts[1:]:
+                row = per_host_final[host].get(key)
+                if row is None:
+                    same_everywhere = False
+                    break
+
+                value = self._effective_value_text(row)
+                source = str(getattr(row, "source_path", ""))
+                scope = str(getattr(row, "scope", ""))
+
+                if value != first_value or source != first_source or scope != first_scope:
+                    same_everywhere = False
+                    break
+
+            if same_everywhere:
+                common[key] = first_row
+
+        return common
+
+    def _append_effective_sections_by_source(self, lines: list[str], final_by_key: dict[str, object]) -> None:
+        buckets: list[tuple[str, list[tuple[str, object]]]] = [
+            ("GLOBAL / group_vars/all", []),
+            ("GROUP / group_vars", []),
+            ("HOST / host_vars", []),
+            ("VAULT / secrets", []),
+            ("OTHER", []),
+        ]
+
+        bucket_map = {name: rows for name, rows in buckets}
+
+        for key, row in sorted(final_by_key.items()):
+            source = str(getattr(row, "source_path", ""))
+
+            if "vault" in source.lower():
+                bucket_map["VAULT / secrets"].append((key, row))
+            elif source.startswith("group_vars/all/") or source == "group_vars/all/main.yml":
+                bucket_map["GLOBAL / group_vars/all"].append((key, row))
+            elif source.startswith("group_vars/"):
+                bucket_map["GROUP / group_vars"].append((key, row))
+            elif source.startswith("host_vars/"):
+                bucket_map["HOST / host_vars"].append((key, row))
+            else:
+                bucket_map["OTHER"].append((key, row))
+
+        for title, rows in buckets:
+            if not rows:
+                continue
+
+            lines.append("")
+            lines.append(title)
+            lines.append("-" * 100)
+            lines.append(f"{'KEY':30} {'VALUE':28} {'SCOPE':10} {'SOURCE'}")
+            lines.append("-" * 100)
+
+            for key, row in rows:
+                value = self._effective_value_text(row)
+                scope = str(getattr(row, "scope", ""))
+                source = str(getattr(row, "source_path", ""))
+
+                lines.append(
+                    f"{key[:30]:30} {value[:28]:28} {scope[:10]:10} {source}"
+                )
+
+
+    def _build_effective_host_lines(self, lines: list[str]) -> list[str]:
+        host_name = self._current_host
+        branch = self._current_group or ""
+
+        if not host_name:
+            lines.append("No host selected.")
+            return lines
+
+        lines.append(f"Selected host: {host_name}")
+        lines.append(f"Branch group: {branch or '-'}")
+        lines.append("")
+
+        try:
+            view = build_host_context_view(
+                self._project,
+                self._scan,
+                host_name,
+                branch,
+            )
+            rows = sorted(view.variables, key=self._variable_sort_key)
+        except Exception as exc:
+            lines.append(f"Failed to build host context: {exc}")
+            return lines
+
+        lines.append("Final effective variables")
+        lines.append("-" * 100)
+
+        if not rows:
+            lines.append("No variables found for this host.")
+            return lines
+
+        self._append_effective_table(lines, rows)
+
+        lines.append("")
+        lines.append("Trace / overrides")
+        lines.append("-" * 100)
+        self._append_effective_trace(lines, rows)
+
+        return lines
+
+    def _append_effective_table(self, lines: list[str], rows: list[object]) -> None:
+        final_by_key = self._effective_final_by_key(rows)
+
+        lines.append(f"{'KEY':30} {'VALUE':28} {'SCOPE':10} {'SOURCE'}")
+        lines.append("-" * 100)
+
+        for key in sorted(final_by_key):
+            row = final_by_key[key]
+            value = self._effective_value_text(row)
+            scope = str(getattr(row, "scope", ""))
+            source = str(getattr(row, "source_path", ""))
+
+            lines.append(
+                f"{key[:30]:30} {value[:28]:28} {scope[:10]:10} {source}"
+            )
+
+    def _append_effective_trace(self, lines: list[str], rows: list[object]) -> None:
+        traces: dict[str, list[object]] = {}
+        final_by_key = self._effective_final_by_key(rows)
+
+        for row in rows:
+            key = str(getattr(row, "key", ""))
+            traces.setdefault(key, []).append(row)
+
+        for key in sorted(traces):
+            chain = traces[key]
+            lines.append("")
+            lines.append(key)
+
+            for idx, row in enumerate(chain, start=1):
+                value = self._effective_value_text(row)
+                scope = str(getattr(row, "scope", ""))
+                source = str(getattr(row, "source_path", ""))
+
+                winner = "  <-- final" if row is final_by_key.get(key) else ""
+                lines.append(f"  {idx}. [{scope}] {source}")
+                lines.append(f"     value: {value}{winner}")
+
+    def _effective_final_by_key(self, rows: list[object]) -> dict[str, object]:
+        final_by_key: dict[str, object] = {}
+
+        for row in rows:
+            key = str(getattr(row, "key", ""))
+            final_by_key[key] = row
+
+        return final_by_key
+
+    def _effective_value_text(self, row: object) -> str:
+        value = str(getattr(row, "value_text", ""))
+        source = str(getattr(row, "source_path", ""))
+
+        if "vault" in source.lower():
+            return "********"
+
+        return value
+
+    def _hosts_for_group(self, group_name: str) -> list[str]:
+        if not self._project:
+            return []
+
+        result: set[str] = set()
+        visited: set[str] = set()
+
+        def collect(name: str) -> None:
+            if name in visited:
+                return
+
+            visited.add(name)
+
+            group = self._project.groups.get(name)
+            if not group:
+                return
+
+            for host in getattr(group, "hosts", []):
+                result.add(host)
+
+            for child in getattr(group, "children", []):
+                collect(child)
+
+        collect(group_name)
+
+        return sorted(result)
+
 
     def _export_workspace(self) -> None:
         if not self._project: return
