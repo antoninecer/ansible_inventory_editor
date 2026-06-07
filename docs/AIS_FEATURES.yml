@@ -1,0 +1,123 @@
+---
+app:
+  name: AIS - Ansible Inventory Studio
+  short_name: AIS
+  version: 0.1.0
+  implementation_language: python
+  ui_framework: PySide6
+  default_locale: en
+  mode: gui
+  target: ansible-inventory-workspace
+
+status:
+  maturity: active_development
+  usable_as_desktop_tool: true
+  public_api: false
+  vscode_extension: false
+
+supported_inventory:
+  yaml_static: true
+  ini_static: partial
+  directory_inventory: true
+  dynamic_inventory: false
+  tar_gz_snapshot: false
+
+supported_var_sources:
+  group_vars_all: true
+  group_vars: true
+  host_vars: true
+  inline_host_vars: partial
+  vault_files: true
+  playbook_vars: false
+  role_vars: false
+  role_defaults: false
+  facts: false
+  set_fact: false
+  registered_vars: false
+  extra_vars: false
+
+filesystem_conventions:
+  inventory_file_default: inventory.yml
+  group_vars_root: group_vars
+  host_vars_root: host_vars
+  default_vars_file: main.yml
+  default_vault_file: vault.yml
+  prefer_directory_per_host: true
+  allow_multiple_files_per_group: true
+  allow_multiple_files_per_host: true
+
+features:
+  import:
+    inventory_file: true
+    group_vars: true
+    host_vars: true
+    vault_files: true
+    unknown_file_detection: true
+
+  edit:
+    create_project: true
+    create_group: true
+    create_host: true
+    assign_host_to_multiple_groups: true
+    add_group_variable: true
+    add_host_variable: true
+    choose_target_var_file: true
+    suggest_vault_yml_for_encrypted_values: true
+    internal_source_editor: true
+
+  vault:
+    detect_vault_files: true
+    mask_vault_values: true
+    open_vault_file_with_credentials: true
+    replace_ansible_vault: false
+    upload_vault_password: false
+
+  analysis:
+    source_path_trace: true
+    effective_config_preview: true
+    affected_hosts_for_group: true
+    common_group_context_variables: true
+    per_host_differences: true
+    vault_source_grouping: true
+    suggested_ansible_limit: true
+    basic_issue_reporting: true
+    advanced_conflict_detection: partial
+    type_mismatch_detection: partial
+
+  search:
+    toolbar: true
+    inventory_navigation: true
+    global_host_search: partial
+    global_group_search: partial
+    global_variable_key_search: partial
+    variable_value_search: false
+    file_path_search_default: false
+
+  export:
+    write_directory_workspace: true
+    write_tar_gz_snapshot: false
+    backup_before_save: false
+    before_after_save_audit: false
+    preserve_comments_guaranteed: false
+
+  documentation:
+    product_readme: true
+    roadmap: true
+    architecture_draft: true
+    manifest_original_archived: true
+
+current_limitations:
+  - Effective Config is static AIS model resolution, not a real Ansible runtime execution.
+  - ansible-inventory verification is not implemented yet.
+  - play vars, role vars, facts, set_fact and extra-vars are not included.
+  - search is still being stabilized.
+  - conflict analysis is still basic.
+  - comment-preserving round-trip editing is not guaranteed everywhere.
+  - packaging as a native desktop application is not finalized.
+
+postponed:
+  - remote audit API
+  - cloud synchronization
+  - VS Code extension
+  - full Ansible runtime simulation
+  - full playbook-aware variable resolution
