@@ -1,4 +1,9 @@
 # AIS - Ansible Inventory Studio
 
-Advanced desktop tool for working with Ansible inventories, host/group variables, vault files and workspace analysis.
+This directory contains the Python package for AIS.
 
+For project overview, usage, current features and roadmap, see the main repository README:
+
+```text
+../README.md
+```
