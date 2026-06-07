@@ -1596,39 +1596,6 @@ class MainWindow(QMainWindow):
         previous_text = self._find_text
         previous_index = self._find_index
 
-        # Recollect every time to avoid stale/deleted QTreeWidgetItem objects.
-        self._find_matches = self._collect_find_matches(needle)
-
-        if not self._find_matches:
-            self._find_text = needle
-            self._find_index = -1
-            self.statusBar().showMessage(f"Nothing found for: {self.find_edit.text()}", 5000)
-            self.find_edit.setFocus()
-            return
-
-        if previous_text != needle or previous_index < 0:
-            self._find_index = 0 if direction >= 0 else len(self._find_matches) - 1
-        else:
-            self._find_index = (previous_index + direction) % len(self._find_matches)
-
-        self._find_text = needle
-        self._select_find_match()
-
-    def _run_find_step(self, direction: int) -> None:
-        if not self.find_edit.isVisible() and not (
-            hasattr(self, "find_toolbar") and self.find_toolbar.isVisible()
-        ):
-            self._show_find_bar()
-            return
-
-        needle = self.find_edit.text().strip().lower()
-        if not needle:
-            self.statusBar().showMessage("Enter text to search.", 3000)
-            return
-
-        previous_text = self._find_text
-        previous_index = self._find_index
-
         self._find_matches = self._collect_find_matches(needle)
 
         if not self._find_matches:
