@@ -56,3 +56,8 @@ htmlcov/
 # Local runtime/config
 .env
 .env.*
+
+# AIS local/generated
+ansible-lab-output/
+inventory-editor/inventory_editor/gui/*.bak*
+docs/dev/
