@@ -5,7 +5,7 @@ import subprocess
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QTimer, QSize
-from PySide6.QtGui import QBrush, QColor, QFont, QAction, QIcon, QKeySequence, QShortcut
+from PySide6.QtGui import QBrush, QColor, QFont, QAction, QIcon, QKeySequence, QShortcut, QTextDocument, QTextCursor
 from PySide6.QtWidgets import (
     QApplication,
     QDialog,
@@ -506,6 +506,22 @@ class MainWindow(QMainWindow):
         self.effective_refresh_btn.clicked.connect(self._show_effective_config)
         effective_head.addWidget(self.effective_refresh_btn)
 
+        effective_head.addWidget(QLabel(" Find in output:"))
+
+        self.effective_find_edit = QLineEdit()
+        self.effective_find_edit.setPlaceholderText("Search text...")
+        self.effective_find_edit.setMinimumWidth(220)
+        self.effective_find_edit.returnPressed.connect(self._find_effective_next)
+        effective_head.addWidget(self.effective_find_edit)
+
+        self.effective_find_prev_btn = QPushButton("Previous")
+        self.effective_find_prev_btn.clicked.connect(self._find_effective_previous)
+        effective_head.addWidget(self.effective_find_prev_btn)
+
+        self.effective_find_next_btn = QPushButton("Next")
+        self.effective_find_next_btn.clicked.connect(self._find_effective_next)
+        effective_head.addWidget(self.effective_find_next_btn)
+
         effective_lay.addLayout(effective_head)
 
         self.effective_text = QTextEdit()
@@ -962,6 +978,38 @@ class MainWindow(QMainWindow):
         self.tabs.setCurrentWidget(self.effective_text.parentWidget())
         self.statusBar().showMessage("Effective config preview refreshed.", 5000)
 
+    def _find_effective_next(self) -> None:
+        self._find_effective_text(backward=False)
+
+    def _find_effective_previous(self) -> None:
+        self._find_effective_text(backward=True)
+
+    def _find_effective_text(self, backward: bool = False) -> None:
+        needle = self.effective_find_edit.text().strip()
+        if not needle:
+            self.statusBar().showMessage("Enter text to search in Effective Config.", 3000)
+            return
+
+        flags = QTextDocument.FindFlag.FindBackward if backward else QTextDocument.FindFlag(0)
+
+        found = self.effective_text.find(needle, flags)
+
+        if not found:
+            cursor = self.effective_text.textCursor()
+            if backward:
+                cursor.movePosition(QTextCursor.MoveOperation.End)
+            else:
+                cursor.movePosition(QTextCursor.MoveOperation.Start)
+
+            self.effective_text.setTextCursor(cursor)
+            found = self.effective_text.find(needle, flags)
+
+        if found:
+            direction = "previous" if backward else "next"
+            self.statusBar().showMessage(f"Found {direction}: {needle}", 3000)
+        else:
+            self.statusBar().showMessage(f"Nothing found in Effective Config: {needle}", 5000)
+
     def _build_effective_config_lines(self) -> list[str]:
         limit = self.effective_limit_edit.text().strip() or "-"
 
@@ -1120,9 +1168,11 @@ class MainWindow(QMainWindow):
     def _append_effective_sections_by_source(self, lines: list[str], final_by_key: dict[str, object]) -> None:
         buckets: list[tuple[str, list[tuple[str, object]]]] = [
             ("GLOBAL / group_vars/all", []),
+            ("GLOBAL VAULT / group_vars/all", []),
             ("GROUP / group_vars", []),
+            ("GROUP VAULT / group_vars", []),
             ("HOST / host_vars", []),
-            ("VAULT / secrets", []),
+            ("HOST VAULT / host_vars", []),
             ("OTHER", []),
         ]
 
@@ -1130,15 +1180,27 @@ class MainWindow(QMainWindow):
 
         for key, row in sorted(final_by_key.items()):
             source = str(getattr(row, "source_path", ""))
+            source_l = source.lower()
+            is_vault = "vault" in source_l
 
-            if "vault" in source.lower():
-                bucket_map["VAULT / secrets"].append((key, row))
-            elif source.startswith("group_vars/all/") or source == "group_vars/all/main.yml":
-                bucket_map["GLOBAL / group_vars/all"].append((key, row))
+            if source.startswith("group_vars/all/") or source == "group_vars/all/main.yml":
+                if is_vault:
+                    bucket_map["GLOBAL VAULT / group_vars/all"].append((key, row))
+                else:
+                    bucket_map["GLOBAL / group_vars/all"].append((key, row))
+
             elif source.startswith("group_vars/"):
-                bucket_map["GROUP / group_vars"].append((key, row))
+                if is_vault:
+                    bucket_map["GROUP VAULT / group_vars"].append((key, row))
+                else:
+                    bucket_map["GROUP / group_vars"].append((key, row))
+
             elif source.startswith("host_vars/"):
-                bucket_map["HOST / host_vars"].append((key, row))
+                if is_vault:
+                    bucket_map["HOST VAULT / host_vars"].append((key, row))
+                else:
+                    bucket_map["HOST / host_vars"].append((key, row))
+
             else:
                 bucket_map["OTHER"].append((key, row))
 
