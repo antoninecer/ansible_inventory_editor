@@ -1121,6 +1121,14 @@ class MainWindow(QMainWindow):
                 for row in per_host_rows
             })
 
+        self._append_execution_context(
+            lines=lines,
+            context_type="group",
+            selected_name=group_name,
+            hosts=hosts,
+            host_rows_map=host_rows_map,
+        )
+
         return lines
 
     def _common_effective_rows(self, host_rows_map: dict[str, list[object]]) -> dict[str, object]:
@@ -1262,7 +1270,124 @@ class MainWindow(QMainWindow):
         lines.append("-" * 100)
         self._append_effective_trace(lines, rows)
 
+        self._append_execution_context(
+            lines=lines,
+            context_type="host",
+            selected_name=host_name,
+            hosts=[host_name],
+            host_rows_map={host_name: rows},
+        )
+
         return lines
+
+    def _append_execution_context(
+        self,
+        lines: list[str],
+        context_type: str,
+        selected_name: str,
+        hosts: list[str],
+        host_rows_map: dict[str, list[object]],
+    ) -> None:
+        lines.append("")
+        lines.append("=" * 100)
+        lines.append("Execution / Selection Context")
+        lines.append("=" * 100)
+
+        workspace = str(self._workspace_path) if self._workspace_path else "-"
+        lines.append("Inventory workspace:")
+        lines.append(f"  {workspace}")
+        lines.append("")
+
+        inventory_files = self._inventory_files_for_context()
+        lines.append("Inventory files detected:")
+        if inventory_files:
+            for item in inventory_files:
+                lines.append(f"  - {item}")
+        else:
+            lines.append("  - inventory source not detected by AIS scan")
+        lines.append("")
+
+        lines.append("Selected AIS context:")
+        if context_type == "group":
+            lines.append(f"  group: {selected_name}")
+        elif context_type == "host":
+            lines.append(f"  host: {selected_name}")
+            lines.append(f"  branch/group context: {self._current_group or '-'}")
+        else:
+            lines.append(f"  {context_type}: {selected_name}")
+        lines.append("")
+
+        lines.append("Suggested Ansible limit:")
+        if context_type == "group":
+            lines.append(f"  -l '{selected_name}'")
+        elif context_type == "host":
+            if self._current_group:
+                lines.append(f"  -l '{selected_name}:&{self._current_group}'")
+            else:
+                lines.append(f"  -l '{selected_name}'")
+        else:
+            lines.append("  -")
+        lines.append("")
+
+        lines.append("Affected hosts in AIS static model:")
+        if hosts:
+            lines.append("  " + ", ".join(hosts))
+        else:
+            lines.append("  -")
+        lines.append("")
+
+        sources = self._effective_sources_from_host_rows(host_rows_map)
+        lines.append("Variable sources used in this preview:")
+        if sources:
+            for source in sources:
+                lines.append(f"  - {source}")
+        else:
+            lines.append("  -")
+        lines.append("")
+
+        lines.append("Important:")
+        lines.append(
+            "  Ansible --limit filters hosts. It does not remove variables from other groups"
+        )
+        lines.append(
+            "  if the host is also a member of those groups. This view is a static AIS"
+        )
+        lines.append(
+            "  preview based on the currently loaded inventory model."
+        )
+
+    def _effective_sources_from_host_rows(self, host_rows_map: dict[str, list[object]]) -> list[str]:
+        sources: set[str] = set()
+
+        for rows in host_rows_map.values():
+            for row in rows:
+                source = str(getattr(row, "source_path", "")).strip()
+                if source:
+                    sources.add(source)
+
+        return sorted(sources)
+
+    def _inventory_files_for_context(self) -> list[str]:
+        if not self._workspace_path:
+            return []
+
+        candidates = [
+            "inventory",
+            "inventory.yml",
+            "inventory.yaml",
+            "hosts",
+            "hosts.yml",
+            "hosts.yaml",
+        ]
+
+        found: list[str] = []
+
+        for name in candidates:
+            path = self._workspace_path / name
+            if path.exists():
+                found.append(name)
+
+        return found
 
     def _append_effective_table(self, lines: list[str], rows: list[object]) -> None:
         final_by_key = self._effective_final_by_key(rows)
