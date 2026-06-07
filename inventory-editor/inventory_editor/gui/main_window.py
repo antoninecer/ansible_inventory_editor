@@ -1256,14 +1256,17 @@ class MainWindow(QMainWindow):
             lines.append(f"Failed to build host context: {exc}")
             return lines
 
-        lines.append("Final effective variables")
+        lines.append("Final effective variables by source")
         lines.append("-" * 100)
 
         if not rows:
             lines.append("No variables found for this host.")
             return lines
 
-        self._append_effective_table(lines, rows)
+        self._append_effective_sections_by_source(
+            lines,
+            self._effective_final_by_key(rows),
+        )
 
         lines.append("")
         lines.append("Trace / overrides")
