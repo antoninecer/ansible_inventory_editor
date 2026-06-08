@@ -1609,6 +1609,12 @@ class MainWindow(QMainWindow):
             self._effective_final_by_key(rows),
         )
 
+        self._append_outside_branch_variables(
+            lines=lines,
+            host_name=host_name,
+            selected_branch=branch,
+        )
+
         lines.append("")
         lines.append("Trace / overrides")
         lines.append("-" * 100)
@@ -1629,6 +1635,142 @@ class MainWindow(QMainWindow):
         )
 
         return lines
+
+    def _append_outside_branch_variables(
+        self,
+        lines: list[str],
+        host_name: str,
+        selected_branch: str,
+    ) -> None:
+        if not self._project:
+            return
+
+        try:
+            branch_groups = self._project.branch_groups_for_context(selected_branch)
+            actual_groups = [
+                group.name
+                for group in self._project.ordered_groups_for_host(host_name)
+            ]
+        except Exception:
+            return
+
+        branch_set = set(branch_groups)
+        outside_groups = [
+            group_name
+            for group_name in actual_groups
+            if group_name not in branch_set and group_name != "all"
+        ]
+
+        if not outside_groups:
+            return
+
+        normal_rows: list[ContextVariableRow] = []
+        vault_rows: list[ContextVariableRow] = []
+
+        for group_name in outside_groups:
+            group = self._project.groups.get(group_name)
+            if not group:
+                continue
+
+            for variable in getattr(group, "variables", []):
+                source_path = str(getattr(variable.source, "source_path", "")).strip()
+                is_vault = self._source_looks_vault_backed(source_path)
+
+                row = ContextVariableRow(
+                    key=str(variable.key),
+                    value_text="********" if is_vault else str(variable.value),
+                    scope=variable.scope.value,
+                    source_path=source_path,
+                    source_type=variable.source.source_type,
+                    color="#9e9e9e",
+                )
+
+                if is_vault:
+                    vault_rows.append(row)
+                else:
+                    normal_rows.append(row)
+
+        outside_files = self._membership_variable_files_for_host(
+            host_name=host_name,
+            actual_groups=actual_groups,
+        )
+
+        outside_branch_files: list[str] = []
+        outside_branch_vault_files: list[str] = []
+
+        for source in outside_files:
+            for group_name in outside_groups:
+                prefix = f"group_vars/{group_name}/"
+                if source.startswith(prefix):
+                    outside_branch_files.append(source)
+                    if self._source_looks_vault_backed(source):
+                        outside_branch_vault_files.append(source)
+
+        parsed_sources = {
+            str(row.source_path)
+            for row in normal_rows + vault_rows
+            if str(row.source_path).strip()
+        }
+
+        vault_files_without_parsed_keys = [
+            source
+            for source in sorted(set(outside_branch_vault_files))
+            if source not in parsed_sources
+        ]
+
+        if not normal_rows and not vault_rows and not outside_branch_files:
+            return
+
+        lines.append("")
+        lines.append("=" * 100)
+        lines.append("Outside Selected Branch Variables Loaded by Ansible Membership")
+        lines.append("=" * 100)
+        lines.append(
+            "These variables are not part of the selected AIS branch, but the host is"
+        )
+        lines.append(
+            "also a member of their groups. Real Ansible inventory loading may still"
+        )
+        lines.append(
+            "load them because --limit filters hosts, not group_vars inheritance."
+        )
+        lines.append("")
+
+        lines.append("Outside selected branch groups:")
+        for group_name in outside_groups:
+            lines.append(f"  - {group_name}")
+        lines.append("")
+
+        if normal_rows:
+            lines.append("OUTSIDE SELECTED BRANCH / group_vars")
+            lines.append("-" * 100)
+            self._append_effective_table(
+                lines,
+                sorted(normal_rows, key=lambda row: (row.source_path, row.key)),
+            )
+            lines.append("")
+
+        if vault_rows:
+            lines.append("OUTSIDE SELECTED BRANCH VAULT / group_vars")
+            lines.append("-" * 100)
+            self._append_effective_table(
+                lines,
+                sorted(vault_rows, key=lambda row: (row.source_path, row.key)),
+            )
+            lines.append("")
+
+        if vault_files_without_parsed_keys:
+            lines.append("OUTSIDE SELECTED BRANCH VAULT FILES / keys unavailable")
+            lines.append("-" * 100)
+            lines.append(
+                "AIS detected these vault-backed files by inventory membership, but"
+            )
+            lines.append(
+                "their keys may be unavailable without the required vault secret."
+            )
+            for source in vault_files_without_parsed_keys:
+                lines.append(f"  - {source}")
+            lines.append("")
 
     def _append_ansible_membership_impact(
         self,
