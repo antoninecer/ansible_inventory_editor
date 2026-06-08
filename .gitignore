@@ -61,3 +61,11 @@ htmlcov/
 ansible-lab-output/
 inventory-editor/inventory_editor/gui/*.bak*
 docs/dev/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.coverage
+htmlcov/
