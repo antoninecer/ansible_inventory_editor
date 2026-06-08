@@ -37,7 +37,7 @@ from PySide6.QtWidgets import (
 from ruamel.yaml import YAML
 
 from inventory_editor.analyzer.workspace_quality import analyze_workspace_scan
-from inventory_editor.gui.context import build_group_context_view, build_host_context_view
+from inventory_editor.gui.context import ContextVariableRow, build_group_context_view, build_host_context_view
 from inventory_editor.gui.presenter import build_workspace_overview
 from inventory_editor.io.workspace_exporter import export_workspace
 from inventory_editor.io.workspace_loader import load_inventory_workspace
@@ -962,9 +962,112 @@ class MainWindow(QMainWindow):
         if not self._overview: return
         lines = ["Project Overview", ""] + [f"{l}: {v}" for l, v in self._overview.stats]
         self.overview_text.setPlainText("\n".join(lines))
-        self.issues_text.setPlainText("\n".join(self._overview.issues) or "No issues.")
+        self._set_issues_text(self._overview.issues)
         self.variables_tree.clear()
         self.files_tree.clear()
+
+    def _set_issues_text(self, issue_lines: list[str]) -> None:
+        clean_lines = [line for line in issue_lines if str(line).strip()]
+        self.issues_text.setPlainText("\n".join(clean_lines) if clean_lines else "No issues.")
+
+        idx = self.tabs.indexOf(self.issues_text)
+        if idx >= 0:
+            self.tabs.setTabText(idx, "⚠ Issues" if clean_lines else "Issues")
+
+    def _host_membership_issue_lines(self, host_name: str, branch: str) -> list[str]:
+        if not self._project or host_name not in self._project.hosts:
+            return []
+
+        lines: list[str] = []
+
+        try:
+            branch_groups = self._project.branch_groups_for_context(branch)
+            actual_groups = [
+                group.name
+                for group in self._project.ordered_groups_for_host(host_name)
+            ]
+            effective_vars = self._project.effective_variables_for_host(host_name)
+        except Exception as exc:
+            return [f"[B] Failed to calculate Ansible membership impact for host {host_name}: {exc}"]
+
+        branch_set = set(branch_groups)
+        outside_branch_groups = [
+            group_name
+            for group_name in actual_groups
+            if group_name not in branch_set
+        ]
+
+        sources: set[str] = set()
+        vault_sources: set[str] = set()
+        outside_branch_sources: set[str] = set()
+        outside_branch_vault_sources: set[str] = set()
+
+        for variable in effective_vars.values():
+            source = str(getattr(variable.source, "source_path", "")).strip()
+            if not source:
+                continue
+
+            sources.add(source)
+
+            if "vault" in source.lower():
+                vault_sources.add(source)
+
+            for group_name in outside_branch_groups:
+                prefix = f"group_vars/{group_name}/"
+                if source.startswith(prefix):
+                    outside_branch_sources.add(source)
+
+                    if "vault" in source.lower():
+                        outside_branch_vault_sources.add(source)
+
+        if len(actual_groups) > len(branch_groups) or outside_branch_groups:
+            lines.append(
+                f"[B] Host '{host_name}' is member of multiple Ansible inventory groups."
+            )
+            lines.append(
+                f"    Selected AIS branch/context: {branch or '-'}"
+            )
+            lines.append(
+                "    Selected branch groups: "
+                + (", ".join(branch_groups) if branch_groups else "-")
+            )
+            lines.append(
+                "    Actual Ansible groups for this host: "
+                + (", ".join(actual_groups) if actual_groups else "-")
+            )
+            lines.append(
+                "    Important: Ansible --limit filters target hosts only. "
+                "It does not restrict group_vars loading to the selected branch."
+            )
+
+        if outside_branch_sources:
+            lines.append(
+                f"[B] Host '{host_name}' may load variables from groups outside selected branch '{branch}'."
+            )
+            for source in sorted(outside_branch_sources):
+                lines.append(f"    - {source}")
+
+        if vault_sources:
+            lines.append(
+                f"[B] Host '{host_name}' has vault-backed variables reachable through inventory membership."
+            )
+            for source in sorted(vault_sources):
+                lines.append(f"    - {source}")
+            lines.append(
+                "    Jobs without vault secrets may fail even when --limit targets another group containing this host."
+            )
+
+        if outside_branch_vault_sources:
+            lines.append(
+                f"[A] Vault-backed variables exist outside selected branch '{branch}' but are still reachable by host membership."
+            )
+            for source in sorted(outside_branch_vault_sources):
+                lines.append(f"    - {source}")
+            lines.append(
+                "    This is the risky case: a playbook limited to this host/branch can still require Vault because the host belongs to another group."
+            )
+
+        return lines
 
     def _show_group_context(self, name: str) -> None:
         view = build_group_context_view(self._project, self._scan, name)
@@ -972,6 +1075,7 @@ class MainWindow(QMainWindow):
         self._populate_variables_tree(view.variables)
         self._populate_files_tree(view.files)
         self.trace_text.setPlainText(f"Group: {name}\nHosts: {', '.join(view.hosts) or '-'}")
+        self._set_issues_text(self._overview.issues if self._overview else [])
 
     def _show_host_context(self, name: str, branch: str) -> None:
         view = build_host_context_view(self._project, self._scan, name, branch)
@@ -979,6 +1083,13 @@ class MainWindow(QMainWindow):
         self._populate_variables_tree(view.variables)
         self._populate_files_tree(view.files)
         self.trace_text.setPlainText("Double-click a masked value to reveal for 10s.")
+
+        issue_lines: list[str] = []
+        if self._overview:
+            issue_lines.extend(self._overview.issues)
+
+        issue_lines.extend(self._host_membership_issue_lines(name, branch))
+        self._set_issues_text(issue_lines)
 
     def _populate_variables_tree(self, rows: list[object]) -> None:
         self.variables_tree.clear()
@@ -1430,6 +1541,12 @@ class MainWindow(QMainWindow):
         lines.append("-" * 100)
         self._append_effective_trace(lines, rows)
 
+        self._append_ansible_membership_impact(
+            lines=lines,
+            host_name=host_name,
+            selected_branch=branch,
+        )
+
         self._append_execution_context(
             lines=lines,
             context_type="host",
@@ -1439,6 +1556,137 @@ class MainWindow(QMainWindow):
         )
 
         return lines
+
+    def _append_ansible_membership_impact(
+        self,
+        lines: list[str],
+        host_name: str,
+        selected_branch: str,
+    ) -> None:
+        if not self._project:
+            return
+
+        host = self._project.hosts.get(host_name)
+        if host is None:
+            return
+
+        try:
+            actual_groups = self._actual_ansible_groups_for_host(host_name)
+            actual_rows = self._actual_ansible_rows_for_host(host_name)
+        except Exception as exc:
+            lines.append("")
+            lines.append("=" * 100)
+            lines.append("Actual Ansible Inventory Membership Impact")
+            lines.append("=" * 100)
+            lines.append(f"Failed to calculate actual Ansible membership impact: {exc}")
+            return
+
+        actual_sources = self._sources_from_rows(actual_rows)
+        vault_sources = [src for src in actual_sources if "vault" in src.lower()]
+
+        branch_groups = self._project.branch_groups_for_context(selected_branch)
+        branch_set = set(branch_groups)
+        outside_branch_groups = [
+            group_name for group_name in actual_groups
+            if group_name not in branch_set
+        ]
+
+        lines.append("")
+        lines.append("=" * 100)
+        lines.append("Actual Ansible Inventory Membership Impact")
+        lines.append("=" * 100)
+        lines.append(
+            "This section shows the real inventory membership impact for this host."
+        )
+        lines.append(
+            "The selected AIS branch is useful for inspection, but Ansible host variable"
+        )
+        lines.append(
+            "loading is based on all groups the host belongs to, not only on --limit."
+        )
+        lines.append("")
+
+        lines.append("Selected AIS branch/context groups:")
+        if branch_groups:
+            for group_name in branch_groups:
+                lines.append(f"  - {group_name}")
+        else:
+            lines.append("  -")
+        lines.append("")
+
+        lines.append("All Ansible inventory groups for this host:")
+        if actual_groups:
+            for group_name in actual_groups:
+                marker = "  (outside selected branch)" if group_name in outside_branch_groups else ""
+                lines.append(f"  - {group_name}{marker}")
+        else:
+            lines.append("  -")
+        lines.append("")
+
+        lines.append("Variable sources Ansible may load for this host:")
+        if actual_sources:
+            for source in actual_sources:
+                lines.append(f"  - {source}")
+        else:
+            lines.append("  -")
+        lines.append("")
+
+        if vault_sources:
+            lines.append("Vault impact:")
+            for source in vault_sources:
+                lines.append(f"  - {source}")
+            lines.append("")
+            lines.append(
+                "WARNING: This host has vault-backed variables reachable through its"
+            )
+            lines.append(
+                "inventory group membership. Jobs without vault secrets may fail even"
+            )
+            lines.append(
+                "when --limit targets another group containing the same host."
+            )
+        else:
+            lines.append("Vault impact:")
+            lines.append("  No vault-backed variable sources detected for this host membership.")
+
+    def _actual_ansible_groups_for_host(self, host_name: str) -> list[str]:
+        if not self._project:
+            return []
+
+        groups = self._project.ordered_groups_for_host(host_name)
+        return [group.name for group in groups]
+
+    def _actual_ansible_rows_for_host(self, host_name: str) -> list[object]:
+        if not self._project:
+            return []
+
+        effective = self._project.effective_variables_for_host(host_name)
+
+        rows: list[object] = []
+        for key, variable in sorted(effective.items(), key=lambda item: item[0].lower()):
+            source_path = variable.source.source_path
+            rows.append(
+                ContextVariableRow(
+                    key=key,
+                    value_text=str(variable.value),
+                    scope=variable.scope.value,
+                    source_path=source_path,
+                    source_type=variable.source.source_type,
+                    color="#546e7a",
+                )
+            )
+
+        return rows
+
+    def _sources_from_rows(self, rows: list[object]) -> list[str]:
+        sources: set[str] = set()
+
+        for row in rows:
+            source = str(getattr(row, "source_path", "")).strip()
+            if source:
+                sources.add(source)
+
+        return sorted(sources)
 
     def _append_execution_context(
         self,
