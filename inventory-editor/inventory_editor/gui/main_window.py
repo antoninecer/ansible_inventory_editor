@@ -396,7 +396,7 @@ class MainWindow(QMainWindow):
         self.inventory_combo = QComboBox()
         self.inventory_combo.setMinimumWidth(260)
         self.inventory_combo.setToolTip("Select inventory file used as AIS source of truth")
-        self.inventory_combo.activated.connect(lambda _index: self._load_workspace())
+        self.inventory_combo.activated.connect(self._on_inventory_combo_activated)
         toolbar.addWidget(self.inventory_combo)
         
         toolbar.addSeparator()
@@ -742,20 +742,49 @@ class MainWindow(QMainWindow):
         raw_path = self.path_edit.text().strip()
         root = Path(raw_path).expanduser().resolve() if raw_path else None
 
-        current = self.inventory_combo.currentText().strip()
+        previous = self.inventory_combo.currentText().strip()
+        candidates = self._discover_inventory_candidates(root) if root else []
+
         self.inventory_combo.blockSignals(True)
         self.inventory_combo.clear()
 
-        if root:
-            for item in self._discover_inventory_candidates(root):
-                self.inventory_combo.addItem(item)
+        for item in candidates:
+            self.inventory_combo.addItem(item)
 
-        if current:
-            idx = self.inventory_combo.findText(current)
+        selected = ""
+
+        # Prefer previously selected value if it still exists.
+        if previous and previous in candidates:
+            selected = previous
+
+        # Then prefer saved default inventory from settings.
+        if not selected:
+            settings = load_settings()
+            default_inventory = getattr(settings, "default_inventory_file", "").strip()
+            if default_inventory and default_inventory in candidates:
+                selected = default_inventory
+
+        # Otherwise select the first discovered candidate.
+        if not selected and candidates:
+            selected = candidates[0]
+
+        if selected:
+            idx = self.inventory_combo.findText(selected)
             if idx >= 0:
                 self.inventory_combo.setCurrentIndex(idx)
 
         self.inventory_combo.blockSignals(False)
+
+
+    def _on_inventory_combo_activated(self, _index: int) -> None:
+        # On Windows/WSL the combobox popup may remain visually stuck if the
+        # workspace reload starts directly inside the activated signal.
+        # Hide the popup first and run the reload in the next Qt event loop turn.
+        if hasattr(self, "inventory_combo"):
+            self.inventory_combo.hidePopup()
+            self.inventory_combo.clearFocus()
+
+        QTimer.singleShot(0, self._load_workspace)
 
     def _selected_inventory_file(self) -> str | None:
         if not hasattr(self, "inventory_combo"):
