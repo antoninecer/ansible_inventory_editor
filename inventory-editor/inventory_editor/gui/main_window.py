@@ -1152,9 +1152,20 @@ class MainWindow(QMainWindow):
 
     def _show_host_context(self, name: str, branch: str) -> None:
         view = build_host_context_view(self._project, self._scan, name, branch)
-        self.overview_text.setPlainText("\n".join(view.summary_lines))
+
+        overview_lines = self._host_overview_lines(
+            host_name=name,
+            branch=branch,
+            effective_variable_count=len(view.variables),
+        )
+        self.overview_text.setPlainText("\n".join(overview_lines))
+
         self._populate_variables_tree(view.variables)
+        self._append_outside_branch_variables_to_variables_tab(name, branch)
+
         self._populate_files_tree(view.files)
+        self._append_outside_branch_files_to_files_tab(name, branch)
+
         self.trace_text.setPlainText("Double-click a masked value to reveal for 10s.")
 
         issue_lines: list[str] = []
@@ -1163,6 +1174,242 @@ class MainWindow(QMainWindow):
 
         issue_lines.extend(self._host_membership_issue_lines(name, branch))
         self._set_issues_text(issue_lines)
+
+    def _host_overview_lines(
+        self,
+        host_name: str,
+        branch: str,
+        effective_variable_count: int,
+    ) -> list[str]:
+        if not self._project or host_name not in self._project.hosts:
+            return [
+                f"Host: {host_name}",
+                f"Selected AIS branch: {branch or '-'}",
+                f"Effective variables in selected AIS branch: {effective_variable_count}",
+            ]
+
+        try:
+            branch_groups = self._project.branch_groups_for_context(branch)
+            actual_groups = [
+                group.name
+                for group in self._project.ordered_groups_for_host(host_name)
+            ]
+            outside_groups = self._outside_branch_groups_for_host(host_name, branch)
+            actual_files = self._membership_variable_files_for_host(
+                host_name=host_name,
+                actual_groups=actual_groups,
+            )
+        except Exception as exc:
+            return [
+                f"Host: {host_name}",
+                f"Selected AIS branch: {branch or '-'}",
+                "",
+                "Actual Ansible membership impact:",
+                f"  failed to calculate: {exc}",
+            ]
+
+        outside_files: list[str] = []
+        outside_vault_files: list[str] = []
+
+        for source in actual_files:
+            for group_name in outside_groups:
+                if source.startswith(f"group_vars/{group_name}/"):
+                    outside_files.append(source)
+                    if self._source_looks_vault_backed(source):
+                        outside_vault_files.append(source)
+
+        all_vault_files = [
+            source for source in actual_files
+            if self._source_looks_vault_backed(source)
+        ]
+
+        lines: list[str] = []
+        lines.append(f"Host: {host_name}")
+        lines.append(f"Selected AIS branch: {branch or '-'}")
+        lines.append("")
+
+        lines.append("AIS branch context groups:")
+        lines.append("  " + (", ".join(branch_groups) if branch_groups else "-"))
+        lines.append("")
+
+        lines.append("Actual Ansible inventory groups:")
+        lines.append("  " + (", ".join(actual_groups) if actual_groups else "-"))
+        lines.append("")
+
+        lines.append("Outside selected branch groups:")
+        lines.append("  " + (", ".join(outside_groups) if outside_groups else "-"))
+
+        if outside_groups:
+            lines.append("")
+            lines.append("WARNING:")
+            lines.append("  This host belongs to groups outside the selected AIS branch.")
+            lines.append("  Ansible --limit filters target hosts only.")
+            lines.append("  It does not restrict group_vars loading to the selected branch.")
+
+        lines.append("")
+        try:
+            actual_effective_count = len(self._project.effective_variables_for_host(host_name))
+        except Exception:
+            actual_effective_count = -1
+
+        lines.append("AIS branch preview:")
+        lines.append(f"  Variables visible in selected branch: {effective_variable_count}")
+        lines.append("  This number depends on where the host is selected in the AIS tree.")
+        lines.append("")
+
+        lines.append("Actual Ansible membership:")
+        if actual_effective_count >= 0:
+            lines.append(f"  Effective variables from full host membership: {actual_effective_count}")
+        else:
+            lines.append("  Effective variables from full host membership: failed to calculate")
+        lines.append("  This number should be the same for this host regardless of selected branch.")
+        lines.append("")
+
+        lines.append(f"Outside branch variable files detected: {len(set(outside_files))}")
+        lines.append(f"Vault files reachable by full membership: {len(set(all_vault_files))}")
+
+        if outside_vault_files:
+            lines.append("")
+            lines.append("HIGH RISK:")
+            lines.append("  Vault-backed files exist outside the selected branch but are reachable")
+            lines.append("  through this host's real Ansible group membership.")
+
+        return lines
+
+    def _outside_branch_groups_for_host(self, host_name: str, branch: str) -> list[str]:
+        if not self._project or host_name not in self._project.hosts:
+            return []
+
+        branch_groups = self._project.branch_groups_for_context(branch)
+        actual_groups = [
+            group.name
+            for group in self._project.ordered_groups_for_host(host_name)
+        ]
+
+        branch_set = set(branch_groups)
+
+        return [
+            group_name
+            for group_name in actual_groups
+            if group_name not in branch_set and group_name != "all"
+        ]
+
+    def _append_outside_branch_variables_to_variables_tab(self, host_name: str, branch: str) -> None:
+        outside_groups = self._outside_branch_groups_for_host(host_name, branch)
+
+        if not outside_groups:
+            return
+
+        root_item = QTreeWidgetItem([
+            "⚠ OUTSIDE SELECTED BRANCH",
+            "Ansible may still load these variables",
+            "warning",
+            "--limit does not restrict group_vars inheritance",
+        ])
+        root_item.setToolTip(
+            0,
+            "The selected AIS branch is not an isolation boundary. "
+            "Ansible may load variables from all groups this host belongs to."
+        )
+        self._style_item(root_item, "#d84315", bold=True)
+        self.variables_tree.addTopLevelItem(root_item)
+
+        for group_name in outside_groups:
+            group = self._project.groups.get(group_name) if self._project else None
+
+            group_item = QTreeWidgetItem([
+                f"Outside group: {group_name}",
+                "",
+                "outside-group",
+                f"group_vars/{group_name}",
+            ])
+            self._style_item(group_item, "#ef6c00", bold=True)
+            root_item.addChild(group_item)
+
+            if not group:
+                continue
+
+            for variable in sorted(getattr(group, "variables", []), key=lambda v: str(v.key).lower()):
+                source_path = str(getattr(variable.source, "source_path", "")).strip()
+                is_vault = self._source_looks_vault_backed(source_path)
+                value_text = "********" if is_vault else str(variable.value)
+
+                item = QTreeWidgetItem([
+                    str(variable.key),
+                    value_text,
+                    "outside group",
+                    source_path,
+                ])
+                item.setData(0, Qt.ItemDataRole.UserRole, str(variable.key))
+                item.setData(1, Qt.ItemDataRole.UserRole, str(variable.value))
+                item.setToolTip(
+                    0,
+                    f"This variable comes from outside selected branch '{branch}', "
+                    f"but host '{host_name}' is also member of group '{group_name}'."
+                )
+                self._style_item(item, "#ef6c00")
+                group_item.addChild(item)
+
+        self.variables_tree.expandItem(root_item)
+
+    def _append_outside_branch_files_to_files_tab(self, host_name: str, branch: str) -> None:
+        if not self._project:
+            return
+
+        outside_groups = self._outside_branch_groups_for_host(host_name, branch)
+
+        if not outside_groups:
+            return
+
+        actual_groups = [
+            group.name
+            for group in self._project.ordered_groups_for_host(host_name)
+        ]
+
+        membership_files = self._membership_variable_files_for_host(
+            host_name=host_name,
+            actual_groups=actual_groups,
+        )
+
+        outside_files: list[str] = []
+
+        for source in membership_files:
+            for group_name in outside_groups:
+                if source.startswith(f"group_vars/{group_name}/"):
+                    outside_files.append(source)
+
+        if not outside_files:
+            return
+
+        root_item = QTreeWidgetItem([
+            "⚠ outside-branch-vars",
+            "Ansible may still load files from outside selected branch",
+        ])
+        root_item.setToolTip(
+            0,
+            "These files are not part of the selected AIS branch, "
+            "but they belong to groups this host is also a member of."
+        )
+        self._style_item(root_item, "#d84315", bold=True)
+        self.files_tree.addTopLevelItem(root_item)
+
+        for source in sorted(set(outside_files)):
+            kind = "outside-vault" if self._source_looks_vault_backed(source) else "outside-vars"
+
+            item = QTreeWidgetItem([
+                kind,
+                source,
+            ])
+            item.setData(0, Qt.ItemDataRole.UserRole, (kind, source))
+            item.setToolTip(
+                0,
+                f"Outside selected branch '{branch}'. "
+                "Ansible may still load this file because of host group membership."
+            )
+            self._style_item(item, "#ef6c00")
+            root_item.addChild(item)
+
+        self.files_tree.expandItem(root_item)
 
     def _populate_variables_tree(self, rows: list[object]) -> None:
         self.variables_tree.clear()
