@@ -66,8 +66,13 @@ def load_inventory_file(path: str | Path) -> ProjectModel:
 
     for name, content in root_groups.items():
         if name == "all":
-            # Handle 'all' children/vars
+            # Handle 'all' hosts/children/vars
             if isinstance(content, dict):
+                hosts = content.get("hosts", {})
+                if isinstance(hosts, dict):
+                    for h_name in hosts.keys():
+                        project.assign_host_to_group(h_name, "all")
+
                 children = content.get("children", {})
                 if isinstance(children, dict):
                     for child_name, child_data in children.items():
