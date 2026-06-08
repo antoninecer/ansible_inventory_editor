@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "inventory-editor"
+version = "0.1.0"
+description = "Advanced desktop tool for working with Ansible inventories, host/group variables, vault files and workspace analysis."
+requires-python = ">=3.11"
+
+dependencies = [
+    "ruamel.yaml>=0.18",
+    "pyside6>=6.7",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+    "pytest-cov>=5",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["inventory_editor/tests"]

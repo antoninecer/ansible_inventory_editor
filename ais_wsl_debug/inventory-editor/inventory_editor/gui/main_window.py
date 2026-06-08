@@ -30,7 +30,6 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
     QCheckBox,
-    QComboBox,
     QSizePolicy
 )
 
@@ -329,20 +328,14 @@ class MainWindow(QMainWindow):
 
         if workspace is not None:
             self.path_edit.setText(str(Path(workspace).expanduser().resolve()))
-            self._refresh_inventory_candidates()
             self._load_workspace()
         elif settings.default_workspace:
             self.path_edit.setText(settings.default_workspace)
-            self._refresh_inventory_candidates()
 
     def _setup_shortcuts(self) -> None:
         self.find_shortcut = QShortcut(QKeySequence.StandardKey.Find, self)
-        self.find_shortcut.setContext(Qt.ShortcutContext.ApplicationShortcut)
+        self.find_shortcut.setContext(Qt.ShortcutContext.WindowShortcut)
         self.find_shortcut.activated.connect(self._show_find_bar)
-
-        self.find_shortcut_ctrl = QShortcut(QKeySequence("Ctrl+F"), self)
-        self.find_shortcut_ctrl.setContext(Qt.ShortcutContext.ApplicationShortcut)
-        self.find_shortcut_ctrl.activated.connect(self._show_find_bar)
 
     def _setup_ui(self) -> None:
         # --- Toolbar ---
@@ -361,13 +354,6 @@ class MainWindow(QMainWindow):
         self.browse_action.setToolTip("Browse for workspace directory")
         self.browse_action.triggered.connect(self._browse_workspace)
         toolbar.addAction(self.browse_action)
-
-        toolbar.addWidget(QLabel("  Inventory: "))
-        self.inventory_combo = QComboBox()
-        self.inventory_combo.setMinimumWidth(260)
-        self.inventory_combo.setToolTip("Select inventory file used as AIS source of truth")
-        self.inventory_combo.activated.connect(lambda _index: self._load_workspace())
-        toolbar.addWidget(self.inventory_combo)
         
         toolbar.addSeparator()
         
@@ -668,77 +654,10 @@ class MainWindow(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "Init Failed", str(e))
 
-    def _discover_inventory_candidates(self, root: Path) -> list[str]:
-        if not root.exists() or not root.is_dir():
-            return []
-
-        candidates: set[str] = set()
-
-        root_names = [
-            "inventory",
-            "inventory.yml",
-            "inventory.yaml",
-            "hosts",
-            "hosts.yml",
-            "hosts.yaml",
-        ]
-
-        for name in root_names:
-            path = root / name
-            if path.is_file():
-                candidates.add(name)
-
-        for subdir_name in ("inventory", "inventories"):
-            subdir = root / subdir_name
-            if not subdir.is_dir():
-                continue
-
-            for pattern in ("*.yml", "*.yaml", "hosts", "inventory"):
-                for path in subdir.glob(pattern):
-                    if path.is_file():
-                        candidates.add(str(path.relative_to(root)))
-
-        # Fallback: root-level YAML files that are not obvious vars files.
-        for path in list(root.glob("*.yml")) + list(root.glob("*.yaml")):
-            if path.is_file():
-                candidates.add(path.name)
-
-        return sorted(candidates)
-
-    def _refresh_inventory_candidates(self) -> None:
-        if not hasattr(self, "inventory_combo"):
-            return
-
-        raw_path = self.path_edit.text().strip()
-        root = Path(raw_path).expanduser().resolve() if raw_path else None
-
-        current = self.inventory_combo.currentText().strip()
-        self.inventory_combo.blockSignals(True)
-        self.inventory_combo.clear()
-
-        if root:
-            for item in self._discover_inventory_candidates(root):
-                self.inventory_combo.addItem(item)
-
-        if current:
-            idx = self.inventory_combo.findText(current)
-            if idx >= 0:
-                self.inventory_combo.setCurrentIndex(idx)
-
-        self.inventory_combo.blockSignals(False)
-
-    def _selected_inventory_file(self) -> str | None:
-        if not hasattr(self, "inventory_combo"):
-            return None
-
-        selected = self.inventory_combo.currentText().strip()
-        return selected or None
-
     def _browse_workspace(self) -> None:
         selected = QFileDialog.getExistingDirectory(self, "Select inventory workspace", self.path_edit.text())
         if selected:
             self.path_edit.setText(selected)
-            self._refresh_inventory_candidates()
             self._load_workspace()
 
     def _load_workspace(self) -> None:
@@ -746,16 +665,10 @@ class MainWindow(QMainWindow):
         if not raw_path: return
 
         try:
-            if hasattr(self, "inventory_combo") and self.inventory_combo.count() == 0:
-                self._refresh_inventory_candidates()
-
-            selected_inventory = self._selected_inventory_file()
-
             project, scan = load_inventory_workspace(
-                raw_path,
-                vault_password=settings.vault_password,
-                vault_password_file=settings.vault_password_file,
-                inventory_file=selected_inventory,
+                raw_path, 
+                vault_password=settings.vault_password, 
+                vault_password_file=settings.vault_password_file
             )
             report = analyze_workspace_scan(scan)
             overview = build_workspace_overview(project, scan, report)
@@ -773,9 +686,7 @@ class MainWindow(QMainWindow):
         self._rebuild_tree()
         self._show_overview()
         self._update_action_states()
-        self.statusBar().showMessage(
-            f"Loaded: {self._workspace_path} / inventory: {getattr(self._project, 'inventory_file', '-')}"
-        )
+        self.statusBar().showMessage(f"Loaded: {self._workspace_path}")
 
     def _reload_workspace(self) -> None:
         # Capture current selection
@@ -1460,15 +1371,26 @@ class MainWindow(QMainWindow):
         return sorted(sources)
 
     def _inventory_files_for_context(self) -> list[str]:
-        if self._project and getattr(self._project, "inventory_file", ""):
-            return [str(self._project.inventory_file)]
+        if not self._workspace_path:
+            return []
 
-        selected = self._selected_inventory_file()
-        if selected:
-            return [selected]
+        candidates = [
+            "inventory",
+            "inventory.yml",
+            "inventory.yaml",
+            "hosts",
+            "hosts.yml",
+            "hosts.yaml",
+        ]
 
-        return []
+        found: list[str] = []
 
+        for name in candidates:
+            path = self._workspace_path / name
+            if path.exists():
+                found.append(name)
+
+        return found
 
     def _append_effective_table(self, lines: list[str], rows: list[object]) -> None:
         final_by_key = self._effective_final_by_key(rows)
@@ -1633,24 +1555,10 @@ class MainWindow(QMainWindow):
             if needle in group_name.lower():
                 matches.append(("group", group_name))
 
-        # Host occurrences in the visible inventory tree.
-        # A host can appear in multiple groups, and search must cycle through
-        # every visible host+branch occurrence, not only the unique host object.
-        def walk_host_occurrences(item: QTreeWidgetItem) -> None:
-            payload = item.data(0, Qt.ItemDataRole.UserRole)
-
-            if payload and payload[0] == "host":
-                host_name = str(payload[1])
-                branch = str(payload[2]) if len(payload) > 2 else ""
-
-                if needle in host_name.lower():
-                    matches.append(("host", host_name, branch))
-
-            for i in range(item.childCount()):
-                walk_host_occurrences(item.child(i))
-
-        for i in range(self.tree.topLevelItemCount()):
-            walk_host_occurrences(self.tree.topLevelItem(i))
+        # Hosts
+        for host_name in sorted(self._project.hosts):
+            if needle in host_name.lower():
+                matches.append(("host", host_name))
 
         # Group variable keys
         for group_name, group in sorted(self._project.groups.items()):
@@ -1737,13 +1645,12 @@ class MainWindow(QMainWindow):
 
         elif kind == "host":
             host_name = match[1]
-            branch = match[2] if len(match) > 2 else None
-            item = self._find_inventory_item("host", host_name, branch)
+            item = self._find_inventory_item("host", host_name)
             if item:
                 self._select_tree_item(item)
                 payload = item.data(0, Qt.ItemDataRole.UserRole)
-                branch_label = payload[2] if payload and len(payload) > 2 else "-"
-                label = f"host {host_name} in group {branch_label}"
+                branch = payload[2] if payload and len(payload) > 2 else "-"
+                label = f"host {host_name} in group {branch}"
             else:
                 label = f"host {host_name} not visible"
 
