@@ -27,9 +27,11 @@ inventory_editor/gui/app.py
 inventory_editor/gui/context.py
 inventory_editor/gui/main_window.py
 inventory_editor/gui/presenter.py
+inventory_editor/gui/settings.py
 inventory_editor/io/__init__.py
 inventory_editor/io/inventory_loader.py
 inventory_editor/io/scanner.py
+inventory_editor/io/vault_handler.py
 inventory_editor/io/workspace_exporter.py
 inventory_editor/io/workspace_loader.py
 inventory_editor/models/__init__.py

@@ -1,7 +1,7 @@
 Metadata-Version: 2.4
 Name: inventory-editor
 Version: 0.1.0
-Summary: Ansible Inventory Editor
+Summary: Advanced desktop tool for working with Ansible inventories, host/group variables, vault files and workspace analysis.
 Requires-Python: >=3.11
 Requires-Dist: ruamel.yaml>=0.18
 Requires-Dist: pyside6>=6.7
