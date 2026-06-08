@@ -26,19 +26,20 @@ PIP_BIN="$VENV_DIR/bin/pip"
 echo "Using Python: $("$PYTHON_BIN" --version)"
 echo "Using venv:   $VENV_DIR"
 
-echo "Upgrading pip tooling..."
-"$PYTHON_BIN" -m pip install --upgrade pip setuptools wheel
-
-echo "Installing runtime requirements..."
-"$PIP_BIN" install -r "$REQ_FILE"
+if [[ -f "$REQ_FILE" ]]; then
+  echo "Installing runtime requirements..."
+  "$PIP_BIN" install -r "$REQ_FILE"
+fi
 
 echo "Installing AIS package from local checkout..."
 "$PIP_BIN" install -e "$PKG_DIR"
 
-if [[ "$#" -eq 0 && -d "$ROOT_DIR/ansible-lab" ]]; then
-  echo "Starting AIS with default workspace: $ROOT_DIR/ansible-lab"
-  exec "$PYTHON_BIN" -m inventory_editor.gui "$ROOT_DIR/ansible-lab"
-else
-  echo "Starting AIS..."
+cd "$PKG_DIR"
+
+if [[ "$#" -gt 0 ]]; then
+  echo "Starting AIS with workspace argument: $1"
   exec "$PYTHON_BIN" -m inventory_editor.gui "$@"
+else
+  echo "Starting AIS using saved application settings..."
+  exec "$PYTHON_BIN" -m inventory_editor.gui
 fi

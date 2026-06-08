@@ -166,6 +166,8 @@ class SettingsDialog(QDialog):
         form = QFormLayout()
 
         self.ws_edit = QLineEdit(settings.default_workspace)
+        self.inv_edit = QLineEdit(getattr(settings, "default_inventory_file", ""))
+        self.inv_edit.setPlaceholderText("Relative path, e.g. inventory.yml or inventories/prod.yml")
         self.vault_pass_edit = QLineEdit(settings.vault_password)
         self.vault_pass_edit.setEchoMode(QLineEdit.EchoMode.Password)
         self.vault_file_edit = QLineEdit(settings.vault_password_file)
@@ -177,6 +179,13 @@ class SettingsDialog(QDialog):
         ws_layout = QHBoxLayout()
         ws_layout.addWidget(self.ws_edit)
         ws_layout.addWidget(browse_ws)
+
+        browse_inv = QPushButton("...")
+        browse_inv.setFixedWidth(35)
+        browse_inv.clicked.connect(self._browse_inv)
+        inv_layout = QHBoxLayout()
+        inv_layout.addWidget(self.inv_edit)
+        inv_layout.addWidget(browse_inv)
 
         browse_vf = QPushButton("...")
         browse_vf.setFixedWidth(35)
@@ -193,6 +202,7 @@ class SettingsDialog(QDialog):
         editor_layout.addWidget(browse_editor)
 
         form.addRow("Default Workspace:", ws_layout)
+        form.addRow("Default Inventory File:", inv_layout)
         form.addRow("Vault Password:", self.vault_pass_edit)
         form.addRow("Vault Password File:", vf_layout)
         form.addRow("External Editor Command:", editor_layout)
@@ -208,6 +218,24 @@ class SettingsDialog(QDialog):
         selected = QFileDialog.getExistingDirectory(self, "Select default workspace", self.ws_edit.text())
         if selected: self.ws_edit.setText(selected)
 
+    def _browse_inv(self):
+        base = self.ws_edit.text().strip()
+        selected, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select default inventory file",
+            base if base else str(Path.home()),
+            "Inventory files (*.yml *.yaml hosts inventory);;All files (*)",
+        )
+        if selected:
+            try:
+                if base:
+                    rel = Path(selected).resolve().relative_to(Path(base).expanduser().resolve())
+                    self.inv_edit.setText(str(rel))
+                else:
+                    self.inv_edit.setText(selected)
+            except ValueError:
+                self.inv_edit.setText(selected)
+
     def _browse_vf(self):
         selected, _ = QFileDialog.getOpenFileName(self, "Select Vault password file")
         if selected: self.vault_file_edit.setText(selected)
@@ -218,6 +246,7 @@ class SettingsDialog(QDialog):
 
     def _save(self):
         settings.default_workspace = self.ws_edit.text().strip()
+        settings.default_inventory_file = self.inv_edit.text().strip()
         settings.vault_password = self.vault_pass_edit.text()
         settings.vault_password_file = self.vault_file_edit.text().strip()
         settings.external_editor = self.editor_edit.text().strip()
