@@ -336,13 +336,14 @@ class MainWindow(QMainWindow):
             self._refresh_inventory_candidates()
 
     def _setup_shortcuts(self) -> None:
+        # Single Find shortcut binding.
+        # QKeySequence.StandardKey.Find maps to Cmd+F on macOS and Ctrl+F on Windows/Linux.
+        # Do not also set the same shortcut on QAction, otherwise Qt may report:
+        # "Ambiguous shortcut overload: Ctrl+F".
         self.find_shortcut = QShortcut(QKeySequence.StandardKey.Find, self)
         self.find_shortcut.setContext(Qt.ShortcutContext.ApplicationShortcut)
         self.find_shortcut.activated.connect(self._show_find_bar)
 
-        self.find_shortcut_ctrl = QShortcut(QKeySequence("Ctrl+F"), self)
-        self.find_shortcut_ctrl.setContext(Qt.ShortcutContext.ApplicationShortcut)
-        self.find_shortcut_ctrl.activated.connect(self._show_find_bar)
 
     def _setup_ui(self) -> None:
         # --- Toolbar ---
@@ -385,7 +386,7 @@ class MainWindow(QMainWindow):
         
         self.find_action = QAction("Find", self)
         self.find_action.setToolTip("Search hosts, groups and variable keys (Ctrl+F / Cmd+F)")
-        self.find_action.setShortcut(QKeySequence.StandardKey.Find)
+        # Shortcut is handled by _setup_shortcuts() to avoid duplicate Ctrl+F bindings.
         self.find_action.triggered.connect(self._show_find_bar)
         toolbar.addAction(self.find_action)
 
