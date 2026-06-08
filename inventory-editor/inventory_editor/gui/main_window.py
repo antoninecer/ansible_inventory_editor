@@ -383,7 +383,8 @@ class MainWindow(QMainWindow):
         
         toolbar.addWidget(QLabel("  Workspace: "))
         self.path_edit = QLineEdit()
-        self.path_edit.setPlaceholderText("Path to Ansible inventory directory...")
+        self.path_edit.setPlaceholderText("Path to Ansible inventory workspace directory...")
+        self.path_edit.returnPressed.connect(self._reload_current_workspace)
         self.path_edit.setMinimumWidth(400)
         toolbar.addWidget(self.path_edit)
         
@@ -398,6 +399,11 @@ class MainWindow(QMainWindow):
         self.inventory_combo.setToolTip("Select inventory file used as AIS source of truth")
         self.inventory_combo.activated.connect(self._on_inventory_combo_activated)
         toolbar.addWidget(self.inventory_combo)
+
+        self.load_action = QAction("Load", self)
+        self.load_action.setToolTip("Load selected workspace and inventory file")
+        self.load_action.triggered.connect(self._reload_current_workspace)
+        toolbar.addAction(self.load_action)
         
         toolbar.addSeparator()
         
@@ -759,7 +765,6 @@ class MainWindow(QMainWindow):
 
         # Then prefer saved default inventory from settings.
         if not selected:
-            settings = load_settings()
             default_inventory = getattr(settings, "default_inventory_file", "").strip()
             if default_inventory and default_inventory in candidates:
                 selected = default_inventory
@@ -792,6 +797,10 @@ class MainWindow(QMainWindow):
 
         selected = self.inventory_combo.currentText().strip()
         return selected or None
+
+    def _reload_current_workspace(self) -> None:
+        self._refresh_inventory_candidates()
+        self._load_workspace()
 
     def _browse_workspace(self) -> None:
         selected = QFileDialog.getExistingDirectory(self, "Select inventory workspace", self.path_edit.text())
