@@ -974,6 +974,59 @@ class MainWindow(QMainWindow):
         if idx >= 0:
             self.tabs.setTabText(idx, "⚠ Issues" if clean_lines else "Issues")
 
+    def _membership_variable_files_for_host(self, host_name: str, actual_groups: list[str]) -> list[str]:
+        if not self._workspace_path:
+            return []
+
+        root = Path(self._workspace_path)
+        found: set[str] = set()
+
+        def add_yaml_files(directory: Path) -> None:
+            if not directory.exists() or not directory.is_dir():
+                return
+
+            for pattern in ("*.yml", "*.yaml"):
+                for path in directory.glob(pattern):
+                    if path.is_file():
+                        try:
+                            found.add(str(path.relative_to(root)))
+                        except ValueError:
+                            found.add(str(path))
+
+        # Ansible always considers group_vars/all for inventory-based vars.
+        add_yaml_files(root / "group_vars" / "all")
+
+        for group_name in actual_groups:
+            if group_name == "all":
+                continue
+            add_yaml_files(root / "group_vars" / group_name)
+
+        add_yaml_files(root / "host_vars" / host_name)
+
+        return sorted(found)
+
+    def _source_looks_vault_backed(self, source: str) -> bool:
+        source_l = source.lower()
+
+        if "vault" in source_l:
+            return True
+
+        if not self._workspace_path:
+            return False
+
+        path = Path(source)
+        if not path.is_absolute():
+            path = Path(self._workspace_path) / path
+
+        try:
+            if path.is_file():
+                head = path.read_text(errors="ignore")[:4096]
+                return "$ANSIBLE_VAULT" in head
+        except Exception:
+            return False
+
+        return False
+
     def _host_membership_issue_lines(self, host_name: str, branch: str) -> list[str]:
         if not self._project or host_name not in self._project.hosts:
             return []
@@ -987,6 +1040,10 @@ class MainWindow(QMainWindow):
                 for group in self._project.ordered_groups_for_host(host_name)
             ]
             effective_vars = self._project.effective_variables_for_host(host_name)
+            filesystem_sources = self._membership_variable_files_for_host(
+                host_name=host_name,
+                actual_groups=actual_groups,
+            )
         except Exception as exc:
             return [f"[B] Failed to calculate Ansible membership impact for host {host_name}: {exc}"]
 
@@ -1001,6 +1058,22 @@ class MainWindow(QMainWindow):
         vault_sources: set[str] = set()
         outside_branch_sources: set[str] = set()
         outside_branch_vault_sources: set[str] = set()
+
+        # Add files discovered directly from group_vars/host_vars membership.
+        # This catches vault files even when AIS cannot decrypt them into variables.
+        for source in filesystem_sources:
+            sources.add(source)
+
+            if self._source_looks_vault_backed(source):
+                vault_sources.add(source)
+
+            for group_name in outside_branch_groups:
+                prefix = f"group_vars/{group_name}/"
+                if source.startswith(prefix):
+                    outside_branch_sources.add(source)
+
+                    if self._source_looks_vault_backed(source):
+                        outside_branch_vault_sources.add(source)
 
         for variable in effective_vars.values():
             source = str(getattr(variable.source, "source_path", "")).strip()
