@@ -784,11 +784,12 @@ class MainWindow(QMainWindow):
     def _on_inventory_combo_activated(self, _index: int) -> None:
         # On Windows/WSL the combobox popup may remain visually stuck if the
         # workspace reload starts directly inside the activated signal.
-        # Hide the popup first and run the reload in the next Qt event loop turn.
+        # Hide the popup immediately and once again in the next Qt event loop turn.
         if hasattr(self, "inventory_combo"):
             self.inventory_combo.hidePopup()
             self.inventory_combo.clearFocus()
 
+        QTimer.singleShot(0, lambda: self.inventory_combo.hidePopup() if hasattr(self, "inventory_combo") else None)
         QTimer.singleShot(0, self._load_workspace)
 
     def _selected_inventory_file(self) -> str | None:
@@ -1297,12 +1298,28 @@ class MainWindow(QMainWindow):
     def _append_outside_branch_variables_to_variables_tab(self, host_name: str, branch: str) -> None:
         outside_groups = self._outside_branch_groups_for_host(host_name, branch)
 
-        if not outside_groups:
+        if not outside_groups or not self._project:
             return
+
+        actual_groups = [
+            group.name
+            for group in self._project.ordered_groups_for_host(host_name)
+        ]
+
+        membership_files = self._membership_variable_files_for_host(
+            host_name=host_name,
+            actual_groups=actual_groups,
+        )
+
+        outside_files: list[str] = []
+        for source in membership_files:
+            for group_name in outside_groups:
+                if source.startswith(f"group_vars/{group_name}/"):
+                    outside_files.append(source)
 
         root_item = QTreeWidgetItem([
             "⚠ OUTSIDE SELECTED BRANCH",
-            "Ansible may still load these variables",
+            "Ansible may still load these variables/files",
             "warning",
             "--limit does not restrict group_vars inheritance",
         ])
@@ -1313,6 +1330,9 @@ class MainWindow(QMainWindow):
         )
         self._style_item(root_item, "#d84315", bold=True)
         self.variables_tree.addTopLevelItem(root_item)
+
+        parsed_sources: set[str] = set()
+        added_any = False
 
         for group_name in outside_groups:
             group = self._project.groups.get(group_name) if self._project else None
@@ -1326,29 +1346,64 @@ class MainWindow(QMainWindow):
             self._style_item(group_item, "#ef6c00", bold=True)
             root_item.addChild(group_item)
 
-            if not group:
-                continue
+            if group:
+                for variable in sorted(getattr(group, "variables", []), key=lambda v: str(v.key).lower()):
+                    source_path = str(getattr(variable.source, "source_path", "")).strip()
+                    parsed_sources.add(source_path)
 
-            for variable in sorted(getattr(group, "variables", []), key=lambda v: str(v.key).lower()):
-                source_path = str(getattr(variable.source, "source_path", "")).strip()
-                is_vault = self._source_looks_vault_backed(source_path)
-                value_text = "********" if is_vault else str(variable.value)
+                    is_vault = self._source_looks_vault_backed(source_path)
+                    value_text = "********" if is_vault else str(variable.value)
+
+                    item = QTreeWidgetItem([
+                        str(variable.key),
+                        value_text,
+                        "outside group",
+                        source_path,
+                    ])
+                    item.setData(0, Qt.ItemDataRole.UserRole, str(variable.key))
+                    item.setData(1, Qt.ItemDataRole.UserRole, str(variable.value))
+                    item.setToolTip(
+                        0,
+                        f"This variable comes from outside selected branch '{branch}', "
+                        f"but host '{host_name}' is also member of group '{group_name}'."
+                    )
+                    self._style_item(item, "#ef6c00")
+                    group_item.addChild(item)
+                    added_any = True
+
+            group_files = sorted({
+                source
+                for source in outside_files
+                if source.startswith(f"group_vars/{group_name}/")
+            })
+
+            for source in group_files:
+                if source in parsed_sources:
+                    continue
+
+                kind = "outside vault file" if self._source_looks_vault_backed(source) else "outside vars file"
 
                 item = QTreeWidgetItem([
-                    str(variable.key),
-                    value_text,
-                    "outside group",
-                    source_path,
+                    "⚠ keys unavailable",
+                    kind,
+                    "outside file",
+                    source,
                 ])
-                item.setData(0, Qt.ItemDataRole.UserRole, str(variable.key))
-                item.setData(1, Qt.ItemDataRole.UserRole, str(variable.value))
+                item.setData(0, Qt.ItemDataRole.UserRole, source)
+                item.setData(1, Qt.ItemDataRole.UserRole, "")
                 item.setToolTip(
                     0,
-                    f"This variable comes from outside selected branch '{branch}', "
-                    f"but host '{host_name}' is also member of group '{group_name}'."
+                    "AIS detected this outside group_vars file through host membership, "
+                    "but no parsed variable keys are available. This commonly happens "
+                    "with encrypted vault files or unsupported file content."
                 )
-                self._style_item(item, "#ef6c00")
+                self._style_item(item, "#ff8f00", bold=True)
                 group_item.addChild(item)
+                added_any = True
+
+        if not added_any:
+            self.variables_tree.takeTopLevelItem(self.variables_tree.indexOfTopLevelItem(root_item))
+            return
 
         self.variables_tree.expandItem(root_item)
 
@@ -1377,6 +1432,18 @@ class MainWindow(QMainWindow):
             for group_name in outside_groups:
                 if source.startswith(f"group_vars/{group_name}/"):
                     outside_files.append(source)
+
+        # Fallback: if membership scan did not return files but group variables
+        # are already parsed, expose their source paths anyway.
+        for group_name in outside_groups:
+            group = self._project.groups.get(group_name)
+            if not group:
+                continue
+
+            for variable in getattr(group, "variables", []):
+                source_path = str(getattr(variable.source, "source_path", "")).strip()
+                if source_path.startswith(f"group_vars/{group_name}/"):
+                    outside_files.append(source_path)
 
         if not outside_files:
             return
@@ -1427,6 +1494,20 @@ class MainWindow(QMainWindow):
             real = item.data(1, Qt.ItemDataRole.UserRole)
             if real and item.text(1) == "********":
                 item.setText(1, real)
+
+                clipboard = QApplication.clipboard()
+                if clipboard:
+                    clipboard.setText(str(real))
+                    self.statusBar().showMessage(
+                        "Vault value revealed for 10s and copied to clipboard.",
+                        5000,
+                    )
+                else:
+                    self.statusBar().showMessage(
+                        "Vault value revealed for 10s.",
+                        5000,
+                    )
+
                 QTimer.singleShot(10000, lambda: item.setText(1, "********"))
 
     def _on_variable_selection_changed(self) -> None:
