@@ -9,6 +9,7 @@ inventory_editor.egg-info/dependency_links.txt
 inventory_editor.egg-info/requires.txt
 inventory_editor.egg-info/top_level.txt
 inventory_editor/analyzer/__init__.py
+inventory_editor/analyzer/ansible_command_builder.py
 inventory_editor/analyzer/cli_suggestions.py
 inventory_editor/analyzer/conflicts.py
 inventory_editor/analyzer/file_classifier.py
@@ -43,6 +44,7 @@ inventory_editor/models/vault.py
 inventory_editor/models/vault_password.py
 inventory_editor/models/workspace.py
 inventory_editor/tests/__init__.py
+inventory_editor/tests/test_ansible_command_builder.py
 inventory_editor/tests/test_branch_context.py
 inventory_editor/tests/test_cli.py
 inventory_editor/tests/test_conflicts.py
@@ -53,6 +55,7 @@ inventory_editor/tests/test_host_search.py
 inventory_editor/tests/test_inventory_loader.py
 inventory_editor/tests/test_parent_child_precedence.py
 inventory_editor/tests/test_placement.py
+inventory_editor/tests/test_playbook_discovery.py
 inventory_editor/tests/test_project_model.py
 inventory_editor/tests/test_reporting.py
 inventory_editor/tests/test_scanner.py
