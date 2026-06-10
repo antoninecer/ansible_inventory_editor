@@ -540,6 +540,56 @@ class MainWindow(QMainWindow):
         file_lay.addWidget(self.file_preview, 1)
         self.tabs.addTab(file_cont, "Files")
 
+        # Tab: Membership
+        membership_cont = QWidget()
+        membership_lay = QVBoxLayout(membership_cont)
+
+        self.membership_label = QLabel("Select a host or group to edit membership.")
+        self.membership_label.setWordWrap(True)
+        membership_lay.addWidget(self.membership_label)
+
+        self.host_membership_tree = QTreeWidget()
+        self.host_membership_tree.setHeaderLabels(["Group", "Membership", "Note"])
+        self.host_membership_tree.header().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        self.host_membership_tree.header().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        self.host_membership_tree.header().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        membership_lay.addWidget(self.host_membership_tree)
+
+        host_membership_buttons = QHBoxLayout()
+        self.apply_host_membership_btn = QPushButton("Apply host membership")
+        self.apply_host_membership_btn.clicked.connect(self._apply_host_membership)
+        host_membership_buttons.addWidget(self.apply_host_membership_btn)
+
+        self.remove_host_from_group_btn = QPushButton("Remove from selected group")
+        self.remove_host_from_group_btn.clicked.connect(self._remove_current_host_from_selected_group)
+        host_membership_buttons.addWidget(self.remove_host_from_group_btn)
+
+        self.delete_host_btn = QPushButton("Delete host")
+        self.delete_host_btn.clicked.connect(self._delete_current_host)
+        host_membership_buttons.addWidget(self.delete_host_btn)
+        host_membership_buttons.addStretch()
+        membership_lay.addLayout(host_membership_buttons)
+
+        self.group_members_tree = QTreeWidget()
+        self.group_members_tree.setHeaderLabels(["Host", "Membership", "Note"])
+        self.group_members_tree.header().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        self.group_members_tree.header().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        self.group_members_tree.header().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        membership_lay.addWidget(self.group_members_tree)
+
+        group_members_buttons = QHBoxLayout()
+        self.apply_group_members_btn = QPushButton("Apply group members")
+        self.apply_group_members_btn.clicked.connect(self._apply_group_members)
+        group_members_buttons.addWidget(self.apply_group_members_btn)
+
+        self.delete_group_btn = QPushButton("Delete group")
+        self.delete_group_btn.clicked.connect(self._delete_current_group)
+        group_members_buttons.addWidget(self.delete_group_btn)
+        group_members_buttons.addStretch()
+        membership_lay.addLayout(group_members_buttons)
+
+        self.tabs.addTab(membership_cont, "Membership")
+
         # Tab: Effective Config
         effective_cont = QWidget()
         effective_lay = QVBoxLayout(effective_cont)
@@ -966,6 +1016,7 @@ class MainWindow(QMainWindow):
         self._set_issues_text(self._overview.issues)
         self.variables_tree.clear()
         self.files_tree.clear()
+        self._clear_membership_tab()
 
     def _set_issues_text(self, issue_lines: list[str]) -> None:
         clean_lines = [line for line in issue_lines if str(line).strip()]
@@ -1148,6 +1199,7 @@ class MainWindow(QMainWindow):
         self.overview_text.setPlainText("\n".join(view.summary_lines))
         self._populate_variables_tree(view.variables)
         self._populate_files_tree(view.files)
+        self._populate_group_membership_tab(name)
         self.trace_text.setPlainText(f"Group: {name}\nHosts: {', '.join(view.hosts) or '-'}")
         self._set_issues_text(self._overview.issues if self._overview else [])
 
@@ -1166,6 +1218,8 @@ class MainWindow(QMainWindow):
 
         self._populate_files_tree(view.files)
         self._append_outside_branch_files_to_files_tab(name, branch)
+
+        self._populate_host_membership_tab(name, branch)
 
         self.trace_text.setPlainText("Double-click a masked value to reveal for 10s.")
 
@@ -1477,6 +1531,272 @@ class MainWindow(QMainWindow):
             root_item.addChild(item)
 
         self.files_tree.expandItem(root_item)
+
+    def _clear_membership_tab(self) -> None:
+        if hasattr(self, "membership_label"):
+            self.membership_label.setText("Select a host or group to edit membership.")
+            self.host_membership_tree.clear()
+            self.group_members_tree.clear()
+            self.host_membership_tree.hide()
+            self.group_members_tree.hide()
+            self.apply_host_membership_btn.hide()
+            self.remove_host_from_group_btn.hide()
+            self.delete_host_btn.hide()
+            self.apply_group_members_btn.hide()
+            self.delete_group_btn.hide()
+
+    def _populate_host_membership_tab(self, host_name: str, branch: str) -> None:
+        self._clear_membership_tab()
+
+        if not self._project or host_name not in self._project.hosts:
+            return
+
+        host = self._project.hosts[host_name]
+
+        self.membership_label.setText(
+            f"Host membership: {host_name}\n"
+            f"Selected branch: {branch}\n"
+            "Changing membership changes which group_vars Ansible may load for this host. "
+            "host_vars files are not deleted."
+        )
+
+        self.host_membership_tree.clear()
+        self.host_membership_tree.show()
+        self.apply_host_membership_btn.show()
+        self.remove_host_from_group_btn.show()
+        self.delete_host_btn.show()
+
+        all_item = QTreeWidgetItem(["all", "implicit", "special Ansible group; not edited here"])
+        all_item.setFlags(all_item.flags() & ~Qt.ItemFlag.ItemIsUserCheckable)
+        self._style_item(all_item, "#757575", bold=True)
+        self.host_membership_tree.addTopLevelItem(all_item)
+
+        for group_name in sorted(g for g in self._project.groups if g not in {"all", "ungrouped"}):
+            checked = group_name in host.groups
+            note = "selected branch" if group_name == branch else ""
+            item = QTreeWidgetItem([group_name, "assigned" if checked else "available", note])
+            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            item.setCheckState(0, Qt.CheckState.Checked if checked else Qt.CheckState.Unchecked)
+            item.setData(0, Qt.ItemDataRole.UserRole, group_name)
+
+            if checked:
+                self._style_item(item, "#2e7d32", bold=(group_name == branch))
+            else:
+                self._style_item(item, "#616161", bold=(group_name == branch))
+
+            self.host_membership_tree.addTopLevelItem(item)
+
+    def _populate_group_membership_tab(self, group_name: str) -> None:
+        self._clear_membership_tab()
+
+        if not self._project or group_name not in self._project.groups:
+            return
+
+        group = self._project.groups[group_name]
+        special = group_name in {"all", "ungrouped"}
+
+        self.membership_label.setText(
+            f"Group members: {group_name}\n"
+            "Changing members changes direct host membership in this inventory group. "
+            "host_vars and group_vars files are not deleted."
+        )
+
+        self.group_members_tree.clear()
+        self.group_members_tree.show()
+        self.apply_group_members_btn.show()
+        self.delete_group_btn.show()
+
+        self.apply_group_members_btn.setEnabled(not special)
+        self.delete_group_btn.setEnabled(not special)
+
+        for host_name in sorted(self._project.hosts):
+            checked = host_name in group.hosts
+            note = "direct member" if checked else ""
+            item = QTreeWidgetItem([host_name, "member" if checked else "available", note])
+            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            item.setCheckState(0, Qt.CheckState.Checked if checked else Qt.CheckState.Unchecked)
+            item.setData(0, Qt.ItemDataRole.UserRole, host_name)
+
+            if special:
+                item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEnabled)
+
+            self._style_item(item, "#2e7d32" if checked else "#616161")
+            self.group_members_tree.addTopLevelItem(item)
+
+    def _checked_host_membership_groups(self) -> set[str]:
+        groups: set[str] = set()
+
+        for i in range(self.host_membership_tree.topLevelItemCount()):
+            item = self.host_membership_tree.topLevelItem(i)
+            group_name = item.data(0, Qt.ItemDataRole.UserRole)
+
+            if not group_name:
+                continue
+
+            if item.checkState(0) == Qt.CheckState.Checked:
+                groups.add(str(group_name))
+
+        return groups
+
+    def _checked_group_members(self) -> set[str]:
+        hosts: set[str] = set()
+
+        for i in range(self.group_members_tree.topLevelItemCount()):
+            item = self.group_members_tree.topLevelItem(i)
+            host_name = item.data(0, Qt.ItemDataRole.UserRole)
+
+            if not host_name:
+                continue
+
+            if item.checkState(0) == Qt.CheckState.Checked:
+                hosts.add(str(host_name))
+
+        return hosts
+
+    def _refresh_after_membership_change(self, host_name: str | None = None, branch: str | None = None, group_name: str | None = None) -> None:
+        self._dirty = True
+        self._rebuild_tree()
+
+        if host_name:
+            if self._project and host_name in self._project.hosts:
+                host = self._project.hosts[host_name]
+                target_branch = branch if branch in host.groups else None
+
+                if not target_branch:
+                    target_branch = sorted(host.groups)[0] if host.groups else "ungrouped"
+
+                self._select_in_tree("host", host_name, target_branch)
+                return
+
+        if group_name and self._project and group_name in self._project.groups:
+            self._select_in_tree("group", group_name)
+            return
+
+        self._current_mode, self._current_group, self._current_host = "root", None, None
+        self._show_overview()
+
+    def _apply_host_membership(self) -> None:
+        if not self._project or self._current_mode != "host" or not self._current_host:
+            return
+
+        host_name = self._current_host
+        old_groups = set(self._project.hosts[host_name].groups)
+        new_groups = self._checked_host_membership_groups()
+
+        if old_groups == new_groups:
+            self.statusBar().showMessage("No host membership changes.", 3000)
+            return
+
+        self._project.set_host_groups(host_name, new_groups)
+        self.statusBar().showMessage(
+            f"Updated membership for host {host_name}: {', '.join(sorted(new_groups)) or 'ungrouped'}",
+            5000,
+        )
+        self._refresh_after_membership_change(host_name=host_name, branch=self._current_group)
+
+    def _remove_current_host_from_selected_group(self) -> None:
+        if not self._project or self._current_mode != "host" or not self._current_host:
+            return
+
+        host_name = self._current_host
+        group_name = self._current_group
+
+        if not group_name or group_name in {"all", "ungrouped"}:
+            QMessageBox.information(self, "Remove host from group", "Select a normal inventory group branch first.")
+            return
+
+        answer = QMessageBox.question(
+            self,
+            "Remove host from selected group",
+            f"Remove host '{host_name}' from group '{group_name}'?\n\n"
+            "The host is not deleted. host_vars files are not deleted.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+
+        self._project.remove_host_from_group(host_name, group_name)
+        self.statusBar().showMessage(f"Removed {host_name} from {group_name}.", 5000)
+        self._refresh_after_membership_change(host_name=host_name, branch=group_name)
+
+    def _delete_current_host(self) -> None:
+        if not self._project or self._current_mode != "host" or not self._current_host:
+            return
+
+        host_name = self._current_host
+        groups = sorted(self._project.hosts[host_name].groups)
+
+        answer = QMessageBox.question(
+            self,
+            "Delete host",
+            f"Delete host '{host_name}' from inventory?\n\n"
+            f"Current groups: {', '.join(groups) or '-'}\n\n"
+            "This removes the host from all inventory groups. "
+            "host_vars files are kept on disk.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+
+        self._project.delete_host(host_name)
+        self.statusBar().showMessage(f"Deleted host {host_name} from inventory model. host_vars kept.", 5000)
+        self._refresh_after_membership_change()
+
+    def _apply_group_members(self) -> None:
+        if not self._project or self._current_mode != "group" or not self._current_group:
+            return
+
+        group_name = self._current_group
+
+        if group_name in {"all", "ungrouped"}:
+            QMessageBox.information(self, "Group members", "Special groups cannot be edited here.")
+            return
+
+        old_hosts = set(self._project.groups[group_name].hosts)
+        new_hosts = self._checked_group_members()
+
+        if old_hosts == new_hosts:
+            self.statusBar().showMessage("No group member changes.", 3000)
+            return
+
+        self._project.set_group_hosts(group_name, new_hosts)
+        self.statusBar().showMessage(
+            f"Updated members for group {group_name}: {len(new_hosts)} hosts.",
+            5000,
+        )
+        self._refresh_after_membership_change(group_name=group_name)
+
+    def _delete_current_group(self) -> None:
+        if not self._project or self._current_mode != "group" or not self._current_group:
+            return
+
+        group_name = self._current_group
+
+        if group_name in {"all", "ungrouped"}:
+            QMessageBox.information(self, "Delete group", "Special groups cannot be deleted.")
+            return
+
+        group = self._project.groups[group_name]
+
+        answer = QMessageBox.question(
+            self,
+            "Delete group",
+            f"Delete group '{group_name}' from inventory?\n\n"
+            f"Direct hosts: {len(group.hosts)}\n"
+            f"Child groups: {len(group.children)}\n"
+            f"Group variables: {len(group.variables)}\n\n"
+            "group_vars files are kept on disk.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+
+        self._project.delete_group(group_name)
+        self.statusBar().showMessage(f"Deleted group {group_name} from inventory model. group_vars kept.", 5000)
+        self._refresh_after_membership_change()
 
     def _populate_variables_tree(self, rows: list[object]) -> None:
         self.variables_tree.clear()

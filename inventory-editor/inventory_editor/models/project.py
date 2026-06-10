@@ -44,6 +44,84 @@ class ProjectModel:
         host.add_group(group_name)
         group.add_host(host_name)
 
+    def remove_host_from_group(self, host_name: str, group_name: str) -> None:
+        host = self.hosts.get(host_name)
+        group = self.groups.get(group_name)
+
+        if host:
+            host.groups.discard(group_name)
+
+        if group:
+            group.hosts.discard(host_name)
+
+    def set_host_groups(self, host_name: str, group_names: set[str]) -> None:
+        host = self.add_host(host_name)
+
+        old_groups = set(host.groups)
+
+        for group_name in old_groups:
+            group = self.groups.get(group_name)
+            if group:
+                group.hosts.discard(host_name)
+
+        host.groups.clear()
+
+        for group_name in sorted(group_names):
+            if group_name in {"", "all", "ungrouped"}:
+                continue
+            self.assign_host_to_group(host_name, group_name)
+
+    def set_group_hosts(self, group_name: str, host_names: set[str]) -> None:
+        if group_name in {"", "all", "ungrouped"}:
+            return
+
+        group = self.add_group(group_name)
+
+        old_hosts = set(group.hosts)
+
+        for host_name in old_hosts - host_names:
+            host = self.hosts.get(host_name)
+            if host:
+                host.groups.discard(group_name)
+
+        for host_name in host_names:
+            self.assign_host_to_group(host_name, group_name)
+
+        group.hosts = set(host_names)
+
+    def delete_host(self, host_name: str) -> None:
+        host = self.hosts.get(host_name)
+        if not host:
+            return
+
+        for group_name in list(host.groups):
+            group = self.groups.get(group_name)
+            if group:
+                group.hosts.discard(host_name)
+
+        for group in self.groups.values():
+            group.hosts.discard(host_name)
+
+        self.hosts.pop(host_name, None)
+
+    def delete_group(self, group_name: str) -> None:
+        if group_name in {"", "all", "ungrouped"}:
+            return
+
+        group = self.groups.get(group_name)
+        if not group:
+            return
+
+        for host_name in list(group.hosts):
+            host = self.hosts.get(host_name)
+            if host:
+                host.groups.discard(group_name)
+
+        for candidate in self.groups.values():
+            candidate.children.discard(group_name)
+
+        self.groups.pop(group_name, None)
+
     def add_variable_to_group(self, group_name: str, variable: Variable) -> None:
         group = self.add_group(group_name)
         if variable.scope != VariableScope.GROUP:

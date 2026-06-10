@@ -53,30 +53,50 @@ def export_workspace(project: ProjectModel, target_root: str | Path) -> None:
     if "children" not in inventory_data["all"]:
         inventory_data["all"]["children"] = CommentedMap()
 
-    # Sync groups and hosts to inventory_data
-    # This is a bit complex for round-trip because we need to find where to put things
-    # For now, we update the existing children structure
+    # Sync groups and hosts to inventory_data.
+    # Keep round-trip data where possible, but remove stale hosts/groups too.
     all_children = inventory_data["all"]["children"]
+
+    for old_group_name in list(all_children.keys()):
+        if old_group_name not in project.groups:
+            del all_children[old_group_name]
+
     for group_name, group in project.groups.items():
-        if group_name == "all": continue
-        
+        if group_name == "all":
+            continue
+
         if group_name not in all_children:
             all_children[group_name] = CommentedMap()
-        
+
         g_block = all_children[group_name]
-        
+
         if group.hosts:
-            if "hosts" not in g_block: g_block["hosts"] = CommentedMap()
-            # Add missing hosts
+            old_hosts = g_block.get("hosts", CommentedMap())
+            new_hosts = CommentedMap()
+
             for h_name in sorted(group.hosts):
-                if h_name not in g_block["hosts"]:
-                    g_block["hosts"][h_name] = None
-        
+                if isinstance(old_hosts, dict) and h_name in old_hosts:
+                    new_hosts[h_name] = old_hosts[h_name]
+                else:
+                    new_hosts[h_name] = None
+
+            g_block["hosts"] = new_hosts
+        else:
+            g_block.pop("hosts", None)
+
         if group.children:
-            if "children" not in g_block: g_block["children"] = CommentedMap()
+            old_children = g_block.get("children", CommentedMap())
+            new_children = CommentedMap()
+
             for c_name in sorted(group.children):
-                if c_name not in g_block["children"]:
-                    g_block["children"][c_name] = CommentedMap()
+                if isinstance(old_children, dict) and c_name in old_children:
+                    new_children[c_name] = old_children[c_name]
+                else:
+                    new_children[c_name] = CommentedMap()
+
+            g_block["children"] = new_children
+        else:
+            g_block.pop("children", None)
 
     _write_yaml_rt(root / project.inventory_file, inventory_data, project=project)
 
