@@ -338,6 +338,9 @@ class MainWindow(QMainWindow):
         self._report = None
         self._overview = None
         self._dirty = False
+        self._inventory_dirty = False
+        self._vars_dirty = False
+        self._dirty_var_sources: set[str] = set()
 
         self._current_mode: str | None = None
         self._current_group: str | None = None
@@ -888,6 +891,9 @@ class MainWindow(QMainWindow):
         self._report = report
         self._overview = overview
         self._dirty = False
+        self._inventory_dirty = False
+        self._vars_dirty = False
+        self._dirty_var_sources = set()
 
         self._rebuild_tree()
         self._show_overview()
@@ -1654,7 +1660,7 @@ class MainWindow(QMainWindow):
         return hosts
 
     def _refresh_after_membership_change(self, host_name: str | None = None, branch: str | None = None, group_name: str | None = None) -> None:
-        self._dirty = True
+        self._mark_inventory_dirty()
         self._rebuild_tree()
 
         if host_name:
@@ -1892,6 +1898,20 @@ class MainWindow(QMainWindow):
             if CodeEditorDialog(self, file_path, content, is_vault).exec() == QDialog.DialogCode.Accepted:
                 self._reload_workspace()
 
+    def _mark_inventory_dirty(self) -> None:
+        self._dirty = True
+        self._inventory_dirty = True
+
+    def _mark_var_source_dirty(self, source_path: str) -> None:
+        source_path = str(source_path).strip()
+
+        if not source_path:
+            return
+
+        self._dirty = True
+        self._vars_dirty = True
+        self._dirty_var_sources.add(source_path)
+
     def _add_group(self) -> None:
         name, ok = QInputDialog.getText(self, "Add Group", "Group Name:")
         if ok and name.strip():
@@ -1906,7 +1926,7 @@ class MainWindow(QMainWindow):
             if name:
                 self._project.add_host(name)
                 for g in gs: self._project.assign_host_to_group(name, g)
-                self._dirty = True
+                self._mark_inventory_dirty()
                 self._rebuild_tree()
 
     def _add_variable(self) -> None:
@@ -1930,8 +1950,8 @@ class MainWindow(QMainWindow):
             
             if is_host: self._project.add_variable_to_host(target, v)
             else: self._project.add_variable_to_group(target, v)
-            
-            self._dirty = True
+
+            self._mark_var_source_dirty(path)
             self._rebuild_tree()
 
             if is_host:
@@ -2744,10 +2764,18 @@ class MainWindow(QMainWindow):
             if not VaultHandler.has_credentials(): return
 
         try:
-            export_workspace(self._project, self._workspace_path)
+            export_workspace(
+                self._project,
+                self._workspace_path,
+                write_vars=self._vars_dirty,
+                var_sources_to_write=set(self._dirty_var_sources) if self._vars_dirty else None,
+            )
             export_warnings = list(getattr(self._project, "export_warnings", []))
 
             self._dirty = False
+            self._inventory_dirty = False
+            self._vars_dirty = False
+            self._dirty_var_sources = set()
 
             if export_warnings:
                 QMessageBox.warning(

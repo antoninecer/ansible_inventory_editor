@@ -109,7 +109,7 @@ def _sync_membership_map(
     return new_map
 
 
-def export_workspace(project: ProjectModel, target_root: str | Path) -> None:
+def export_workspace(project: ProjectModel, target_root: str | Path, *, write_vars: bool = True, var_sources_to_write: set[str] | None = None) -> None:
     root = Path(target_root).expanduser().resolve()
     root.mkdir(parents=True, exist_ok=True)
 
@@ -168,6 +168,9 @@ def export_workspace(project: ProjectModel, target_root: str | Path) -> None:
 
     _write_yaml_rt(root / project.inventory_file, inventory_data, project=project)
 
+    if not write_vars:
+        return
+
     # 2. Export variables (group_vars & host_vars)
     raw_var_data = getattr(project, "raw_var_data", {})
 
@@ -190,7 +193,13 @@ def export_workspace(project: ProjectModel, target_root: str | Path) -> None:
             for var in vars_in_file:
                 data[var.key] = var.value
             
-            _write_yaml_rt(root / scope_type / owner_name / file_name, data, project=project)
+            target_path = root / scope_type / owner_name / file_name
+            rel_target = str(target_path.relative_to(root))
+
+            if var_sources_to_write is not None and rel_target not in var_sources_to_write:
+                continue
+
+            _write_yaml_rt(target_path, data, project=project)
 
     for group_name, group in project.groups.items():
         if group.variables:

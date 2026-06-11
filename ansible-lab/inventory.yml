@@ -44,6 +44,7 @@ all:
           ansible_host: 192.168.0.165
     cache_servers:
       hosts:
+        keska:
         vm-157:
         vm-166:
           ansible_host: 192.168.0.166
