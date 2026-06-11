@@ -2745,8 +2745,23 @@ class MainWindow(QMainWindow):
 
         try:
             export_workspace(self._project, self._workspace_path)
+            export_warnings = list(getattr(self._project, "export_warnings", []))
+
             self._dirty = False
-            self.statusBar().showMessage(f"Successfully saved to {self._workspace_path}")
+
+            if export_warnings:
+                QMessageBox.warning(
+                    self,
+                    "Saved with warnings",
+                    "\n\n".join(export_warnings),
+                )
+                self.statusBar().showMessage(
+                    f"Saved to {self._workspace_path} with warnings. Review Git diff.",
+                    7000,
+                )
+            else:
+                self.statusBar().showMessage(f"Successfully saved to {self._workspace_path}")
+
             self._reload_workspace()
         except Exception as e:
             QMessageBox.critical(self, "Save Error", str(e))
